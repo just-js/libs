@@ -67,16 +67,16 @@ function execute (sock, sql) {
   })
 }
 
-function getRows (connection, off) {
-  const { fields, query, buf, dv } = connection.sock.parser
+function getRows (connection) {
+  const { fields, query, buf, dv, u8 } = connection.sock.parser
   const { start, rows } = query
-  off = off || start
+  let off = start
   const result = []
   let i = 0
   let j = 0
   let len = 0
-  let fieldLen = dv.getUint32(off + 1)
-  off += fieldLen + 1
+  //let fieldLen = dv.getUint32(off + 1)
+  //off += fieldLen + 1
   let row
   for (i = 0; i < rows; i++) {
     off += 5
@@ -102,6 +102,10 @@ function getRows (connection, off) {
           row[name] = buf.slice(off, off + len)
         }
       }
+      off += len
+    }
+    if (u8[off] === 84) {
+      len = dv.getUint32(off + 1)
       off += len
     }
   }

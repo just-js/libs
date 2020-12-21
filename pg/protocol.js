@@ -85,18 +85,19 @@ function createParser (buf) {
 
   function onDataRow (len, off) {
     // D = DataRow
+    if (nextRow === 0) query.start = off - 5
     nextRow++
     return off + len - 4
   }
 
   function onCommandComplete (len, off) {
     // C = CommandComplete
-    query.end = off
+    query.end = off - 5
     query.rows = nextRow
     query.running = false
     off += len - 4
     nextRow = 0
-    parser.onMessage(off)
+    parser.onMessage()
     return off
   }
 
@@ -270,10 +271,6 @@ function createParser (buf) {
     parseNext = buf.offset = 0
   }
 
-  function getResult () {
-    return readCString(buf, u8, parseNext)
-  }
-
   function onDefault (len, off) {
     off += len - 4
     parser.onMessage()
@@ -321,7 +318,6 @@ function createParser (buf) {
     type: 0,
     len: 0,
     errors,
-    getResult,
     parse,
     free,
     query

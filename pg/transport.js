@@ -263,10 +263,13 @@ function setupSocket (sock, config) {
       readString = html.escape
     }
     query.getRows = () => {
-      const { buf, dv } = parser
-      const { fields } = query
+      const { buf, dv, u8 } = parser
       const { start, rows } = parser.query
       let off = start
+      //const { fields } = query
+      let f = fields
+      if (!fields.length) f = query.fields
+      just.print(JSON.stringify(fields))
       const result = []
       let i = 0
       let j = 0
@@ -279,7 +282,7 @@ function setupSocket (sock, config) {
         result.push(row)
         for (j = 0; j < cols; j++) {
           len = dv.getUint32(off)
-          const { oid, format } = (fields[j] || fields[0])
+          const { oid, format } = (f[j] || f[0])
           off += 4
           if (format === 0) { // Non-Binary
             if (oid === INT4OID) {
@@ -296,10 +299,13 @@ function setupSocket (sock, config) {
           }
           off += len
         }
+        if (u8[off] === 84) {
+          len = dv.getUint32(off + 1)
+          off += len
+        }
       }
       return result
     }
-    query.getResult = () => parser.getResult()
     if (!onComplete) return query
     fun.prepare(true, err => {
       if (err) return onComplete(err)
@@ -362,10 +368,10 @@ function setupSocket (sock, config) {
     sock.write(md5AuthMessage({ user, pass, salt: parser.salt }))
   }
 
-  function onMessage (off) {
+  function onMessage () {
     const { type } = parser
     if (type === CommandComplete) {
-      callbacks.shift()(null, off)
+      callbacks.shift()()
       return
     }
     if (type === CloseComplete) {
