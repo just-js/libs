@@ -67,6 +67,14 @@ function md5AuthMessage ({ user, pass, salt }) {
   return buf
 }
 
+function terminateMessage () {
+  const buf = new ArrayBuffer(5)
+  const dv = new DataView(buf)
+  dv.setUint8(0, 88) // 'X'
+  dv.setUint32(1, 4)
+  return buf  
+}
+
 function createParser (buf) {
   let nextRow = 0
   let parseNext = 0
@@ -77,19 +85,26 @@ function createParser (buf) {
 
   function onDataRow (len, off) {
     // D = DataRow
+    if (nextRow === 0) query.start = off - 5
     nextRow++
     return off + len - 4
   }
 
   function onCommandComplete (len, off) {
     // C = CommandComplete
-    query.end = off
+    query.end = off - 5
     query.rows = nextRow
     query.running = false
     off += len - 4
     nextRow = 0
     parser.onMessage()
     return off
+  }
+
+  function onCloseComplete (len, off) {
+    // 3 = CloseComplete
+    parser.onMessage()
+    return off + len - 4
   }
 
   function onRowDescripton (len, off) {
@@ -178,7 +193,7 @@ function createParser (buf) {
     off += len - 4
     parser.onMessage()
     query.rows = 0
-    query.start = query.end = off
+    query.start = off
     query.running = true
     return off
   }
@@ -256,10 +271,6 @@ function createParser (buf) {
     parseNext = buf.offset = 0
   }
 
-  function getResult () {
-    return readCString(buf, u8, parseNext)
-  }
-
   function onDefault (len, off) {
     off += len - 4
     parser.onMessage()
@@ -288,6 +299,7 @@ function createParser (buf) {
     [messageTypes.ErrorResponse]: onErrorResponse,
     [messageTypes.RowDescription]: onRowDescripton,
     [messageTypes.CommandComplete]: onCommandComplete,
+    [messageTypes.CloseComplete]: onCloseComplete,
     [messageTypes.ParseComplete]: onParseComplete,
     [messageTypes.BindComplete]: onBindComplete,
     [messageTypes.ReadyForQuery]: onReadyForQuery,
@@ -300,12 +312,12 @@ function createParser (buf) {
   const parser = {
     buf,
     dv,
+    u8,
     fields,
     parameters,
     type: 0,
     len: 0,
     errors,
-    getResult,
     parse,
     free,
     query
@@ -325,6 +337,10 @@ function getPGError (errors) {
 
 const constants = {
   AuthenticationMD5Password: 5,
+  formats: {
+    Text: 0,
+    Binary: 1
+  },
   fieldTypes: {
     INT4OID: 23,
     VARCHAROID: 1043
@@ -335,6 +351,7 @@ const constants = {
     RowDescription: 84,
     CommandComplete: 67,
     ParseComplete: 49,
+    CloseComplete: 51,
     BindComplete: 50,
     ReadyForQuery: 90,
     BackendKeyData: 75,
@@ -345,6 +362,11 @@ const constants = {
   }
 }
 
+constants.messageNames = {}
+Object.keys(constants.messageTypes).forEach(k => {
+  constants.messageNames[constants.messageTypes[k]] = k
+})
+
 const freeList = []
 
-module.exports = { createParser, syncMessage, startupMessage, md5AuthMessage, getPGError, constants }
+module.exports = { createParser, syncMessage, startupMessage, terminateMessage, md5AuthMessage, getPGError, constants }
