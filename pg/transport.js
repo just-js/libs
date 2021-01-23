@@ -269,7 +269,6 @@ function setupSocket (sock, config) {
       //const { fields } = query
       let f = fields
       if (!fields.length) f = query.fields
-      just.print(JSON.stringify(fields))
       const result = []
       let i = 0
       let j = 0

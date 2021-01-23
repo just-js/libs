@@ -78,6 +78,8 @@ function createServer (host = '127.0.0.1', port = 3000) {
     return r
   }
   server.listen = listen
+  server.close = () => net.close(sockfd)
+  server.bind = () => net.bind(sockfd, host, port)
 
   const sockfd = net.socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0)
   net.setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, 1)
