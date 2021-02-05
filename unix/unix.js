@@ -1,15 +1,14 @@
-
 const { sys, net } = just
 const { EPOLLIN, EPOLLERR, EPOLLHUP, EPOLLOUT } = just.loop
-const { IPPROTO_TCP, O_NONBLOCK, TCP_NODELAY, SO_KEEPALIVE, SOMAXCONN, AF_INET, SOCK_STREAM, SOL_SOCKET, SO_REUSEADDR, SO_REUSEPORT, SOCK_NONBLOCK, SO_ERROR } = net
-
+const { O_NONBLOCK, SOMAXCONN, SOCK_STREAM, SOL_SOCKET, AF_UNIX, SOCK_NONBLOCK, SO_ERROR } = net
 const { loop } = just.factory
+const { unlink } = just.fs
 
 const readableMask = EPOLLIN | EPOLLERR | EPOLLHUP
 const readableWritableMask = EPOLLIN | EPOLLERR | EPOLLHUP | EPOLLOUT
 
-function createServer (host = '127.0.0.1', port = 3000) {
-  const server = { host, port }
+function createServer (path) {
+  const server = { path }
   const sockets = {}
 
   function closeSocket (sock) {
@@ -27,14 +26,16 @@ function createServer (host = '127.0.0.1', port = 3000) {
     }
     const clientfd = net.accept(fd)
     const socket = sockets[clientfd] = { fd: clientfd }
-    net.setsockopt(clientfd, IPPROTO_TCP, TCP_NODELAY, 0)
-    net.setsockopt(clientfd, SOL_SOCKET, SO_KEEPALIVE, 0)
     loop.add(clientfd, (fd, event) => {
       if (event & EPOLLERR || event & EPOLLHUP) {
         closeSocket(socket)
         return
       }
       const { offset } = buffer
+      // TODO: it would be better if we raised a readable even and the client 
+      // did the reading and handled any errors. otherwise the error becomes 
+      // disassociated from the read and has to be sent in an anonymous 
+      // onClose/onError callback
       const bytes = net.recv(fd, buffer, offset, byteLength - offset)
       if (bytes > 0) {
         socket.onData(bytes)
@@ -80,18 +81,15 @@ function createServer (host = '127.0.0.1', port = 3000) {
   }
   server.listen = listen
   server.close = () => net.close(sockfd)
-  server.bind = () => net.bind(sockfd, host, port)
-
-  const sockfd = net.socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0)
-  net.setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, 1)
-  net.setsockopt(sockfd, SOL_SOCKET, SO_REUSEPORT, 1)
-  net.bind(sockfd, host, port)
-
+  server.bind = () => net.bind(sockfd, path)
+  const sockfd = net.socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0)
+  unlink(path)
+  net.bind(sockfd, path)
   return server
 }
 
-function createClient (address = '127.0.0.1', port = 3000) {
-  const sock = { address, port, connected: false }
+function createClient (path) {
+  const sock = { path, connected: false }
   let fd
   let byteLength = 0
 
@@ -126,8 +124,6 @@ function createClient (address = '127.0.0.1', port = 3000) {
 
   function handleWrite (fd, event) {
     if (!sock.connected) {
-      net.setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, 0)
-      net.setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, 0)
       let flags = sys.fcntl(fd, sys.F_GETFL, 0)
       flags |= O_NONBLOCK
       sys.fcntl(fd, sys.F_SETFL, flags)
@@ -173,9 +169,9 @@ function createClient (address = '127.0.0.1', port = 3000) {
   sock.close = () => closeSocket(sock)
 
   function connect () {
-    fd = net.socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0)
+    fd = net.socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0)
     loop.add(fd, onSocketEvent, readableWritableMask)
-    net.connect(fd, address, port)
+    net.connect(fd, path)
     sock.fd = fd
     return sock
   }

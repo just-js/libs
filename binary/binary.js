@@ -16,12 +16,13 @@ function dump (bytes, len = bytes.length, off = 0, width = 16, pos = 0) {
         chars.length = 0
       }
     }
+    const boff = i + off
     if (i % 8 === 0) {
-      result.push(`${AG}${i.toString().padStart(5, ' ')}${AD}`)
+      result.push(`${AG}${(boff).toString(16).padStart(5, ' ')}${AD}`)
     }
-    result.push(` ${bytes[i].toString(16).padStart(2, '0')}`)
-    if (bytes[i] >= 32 && bytes[i] <= 126) {
-      chars.push(`${AC}${String.fromCharCode(bytes[i])}${AD}`)
+    result.push(` ${bytes[boff].toString(16).padStart(2, '0')}`)
+    if (bytes[boff] >= 32 && bytes[boff] <= 126) {
+      chars.push(`${AC}${String.fromCharCode(bytes[boff])}${AD}`)
     } else {
       chars.push('.')
     }
