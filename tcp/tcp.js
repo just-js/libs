@@ -13,6 +13,7 @@ function createServer (host = '127.0.0.1', port = 3000) {
   const sockets = {}
 
   function closeSocket (sock) {
+    if (sock.closing) return
     const { fd } = sock
     sock.closing = true
     sock.onClose && sock.onClose(sock)
@@ -96,6 +97,7 @@ function createClient (address = '127.0.0.1', port = 3000) {
   let byteLength = 0
 
   function closeSocket () {
+    if (sock.closing) return
     sock.closing = true
     sock.onClose && sock.onClose(sock)
     loop.remove(fd)

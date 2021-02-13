@@ -12,6 +12,7 @@ function createServer (path) {
   const sockets = {}
 
   function closeSocket (sock) {
+    if (sock.closing) return
     const { fd } = sock
     sock.closing = true
     sock.onClose && sock.onClose(sock)
@@ -94,6 +95,7 @@ function createClient (path) {
   let byteLength = 0
 
   function closeSocket () {
+    if (sock.closing) return
     sock.closing = true
     sock.onClose && sock.onClose(sock)
     loop.remove(fd)
