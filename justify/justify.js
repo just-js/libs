@@ -389,13 +389,13 @@ class Server {
     return this
   }
 
-  listen (port = 3000, address = '127.0.0.1') {
+  listen (port = 3000, address = '127.0.0.1', maxConn = SOMAXCONN) {
     const fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0)
     if (fd < 1) return fd
     this.fd = fd
     serverOptions(fd, this.opts)
     bind(fd, address, port)
-    this.error = listen(fd, SOMAXCONN)
+    this.error = listen(fd, maxConn)
     const server = this
     const { sockets } = server
     const requestHandler = (request, response) => this.handleRequest(request, response)
