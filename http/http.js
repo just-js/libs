@@ -98,11 +98,10 @@ function requestParser (buffer) {
   const parser = { buffer }
   function parse (bytes, off = 0) {
     const { offset } = buffer
-    const count = parseRequests(buffer, offset + bytes, off, answer)
+    const [remaining, count] = parseRequests(buffer, offset + bytes, off, answer)
     if (count > 0) {
       parser.onRequests(count)
     }
-    const [remaining] = answer
     if (remaining > 0) {
       const start = offset + bytes - remaining
       const len = remaining
@@ -132,9 +131,8 @@ function responseParser (buffer) {
   const answer = [0]
   const parser = { buffer }
   function parse (bytes, off = 0) {
-    const count = parseResponses(buffer, buffer.offset + bytes, buffer.offset, answer)
+    const [remaining, count] = parseResponses(buffer, buffer.offset + bytes, buffer.offset, answer)
     const { offset } = buffer
-    const [remaining] = answer
     if (remaining > 0) {
       const start = offset + bytes - remaining
       buffer.offset = start

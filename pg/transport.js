@@ -30,14 +30,14 @@ function getMessageName (type) {
 
 function setupSocket (sock, config) {
   function compile (query, onComplete) {
-    const buf = new ArrayBuffer(4096)
+    const buf = new ArrayBuffer(65536) // TODO
     const dv = new DataView(buf)
     let len = 0
     const fun = {
       dv,
       size: 0,
       described: false,
-      buffer: new ArrayBuffer(65536),
+      buffer: new ArrayBuffer(65536), // TODO
       messages: {
         prepare: { start: 0, len: 0 },
         bind: { start: 0, len: 0 },
@@ -306,6 +306,7 @@ function setupSocket (sock, config) {
       return result
     }
     if (!onComplete) return query
+    // todo: this is horrible
     fun.prepare(true, err => {
       if (err) return onComplete(err)
       fun.describe(true, err => {
@@ -323,7 +324,7 @@ function setupSocket (sock, config) {
 
   function execQuery (sql, onComplete, queries = 1) {
     for (let i = 0; i < queries; i++) {
-      callbacks.push(() => {}) // for RowDescription
+      onComplete.isExec = true
       callbacks.push(onComplete)
     }
     const len = String.byteLength(sql)
@@ -385,12 +386,16 @@ function setupSocket (sock, config) {
       return
     }
     if (type === ErrorResponse) {
-      //callbacks.shift()(new Error(JSON.stringify(parser.errors, null, '  ')))
-      just.print(JSON.stringify(parser.errors, null, '  '))
+      callbacks.shift()(new Error(JSON.stringify(parser.errors, null, '  ')))
+      //just.print(JSON.stringify(parser.errors, null, '  '))
       return
     }
     // don't callback on row description if we are a raw sql query
-    if (type === AuthenticationOk || type === ParseComplete || type === RowDescription || type === NoData) callbacks.shift()()
+    if (type === RowDescription && !(callbacks[0].isExec)) {
+      callbacks.shift()()
+      return
+    }
+    if (type === AuthenticationOk || type === ParseComplete || type === NoData) callbacks.shift()()
   }
 
   const buf = new ArrayBuffer(64 * 1024)
@@ -436,4 +441,14 @@ function connect (config, onPGConnect) {
   })
 }
 
-module.exports = { connect, constants, getMessageName }
+const BinaryInt = {
+  format: constants.formats.Binary,
+  oid: constants.fieldTypes.INT4OID
+}
+
+const VarChar = {
+  format: constants.formats.Text,
+  oid: constants.fieldTypes.VARCHAROID
+}
+
+module.exports = { connect, constants, getMessageName, BinaryInt, VarChar }

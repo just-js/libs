@@ -1,4 +1,4 @@
-// lifted from here: https://github.com/lucagez/slow-json-stringify
+// mostly lifted from here: https://github.com/lucagez/slow-json-stringify
 
 var _prepare = function(e) {
   var r = JSON.stringify(e, function(e, r) {
@@ -100,4 +100,14 @@ sjs = function(e) {
       return r + (o.flag ? o.prevUndef : o.pure)
   }
 };
+
+const JSONify = (o, sp = '  ') => JSON.stringify(o, (k, v) => {
+  if (v.constructor && v.constructor.name === 'BigInt') return v.toString()
+  if (v.constructor && v.constructor.name === 'ArrayBuffer') return `[ArrayBuffer](${v.byteLength})`
+  if (v.constructor && v.constructor.name === 'DataView') return `[DataView](${v.buffer.byteLength})`
+  if (v.constructor && v.constructor.name === 'Uint8Array') return `[Uint8Array](${v.buffer.byteLength})`
+  return v
+}, sp)
+
+exports.JSONify = JSONify
 exports.sjs = sjs, exports.attr = attr, exports.escape = escape;
