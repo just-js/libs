@@ -30,14 +30,14 @@ function getMessageName (type) {
 
 function setupSocket (sock, config) {
   function compile (query, onComplete) {
-    const buf = new ArrayBuffer(65536) // TODO
+    const buf = new ArrayBuffer(24 * 1024) // TODO
     const dv = new DataView(buf)
     let len = 0
     const fun = {
       dv,
       size: 0,
       described: false,
-      buffer: new ArrayBuffer(65536), // TODO
+      buffer: new ArrayBuffer(4096), // TODO
       messages: {
         prepare: { start: 0, len: 0 },
         bind: { start: 0, len: 0 },

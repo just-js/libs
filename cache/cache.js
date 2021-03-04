@@ -4,7 +4,7 @@ class SimpleCache {
     this.maxItems = 1 * 1024 * 1024
     this.now = Date.now()
     this.clock = 0
-    this.resolution = 10 // milliseconds
+    this.resolution = 1000 // milliseconds
     this.map = new Map()
     this.defaultExpiration = expiration
     this.refresh = refresh
