@@ -99,10 +99,10 @@ class Response {
       this.queue += `${text[this.status]}${str.length}${END}${str}`
       return
     }
-    //if (this.headers.length) {
-    //  sendString(this.fd, `${text[this.status]}${str.length}${CRLF}${joinHeaders(this.headers)}${END}${str}`)
-    //  return
-    //}
+    if (this.headers.length) {
+      sendString(this.fd, `${text[this.status]}${str.length}${CRLF}${joinHeaders(this.headers)}${END}${str}`)
+      return
+    }
     sendString(this.fd, `${text[this.status]}${str.length}${END}${str}`)
     this.end()
   }
@@ -147,6 +147,10 @@ class Request {
     this.qs = ''
     this.path = ''
     this.query = null
+    this.contentLength = 0
+    this.bytes = 0
+    this.onBody = (buf, len) => {}
+    this.onEnd = () => {}
   }
 
   get headers () {
@@ -182,6 +186,9 @@ class Request {
   }
 }
 
+const CONTENT_LENGTH = 'Content-Length'
+const GET = 'GET'
+
 class Socket {
   constructor (fd, handler, onResponseComplete) {
     // todo - passing hooks in here is kinda ugly
@@ -192,6 +199,8 @@ class Socket {
     this.off = 0
     // TODO: should we have a response for each request in the pipeline?
     this.response = new Response(fd, onResponseComplete)
+    this.request = new Request(0, 0)
+    this.inBody = false
   }
 
   close () {
@@ -204,24 +213,77 @@ class Socket {
       this.close()
       return true
     }
-    const bytes = recv(fd, this.buf, this.off, this.len)
+    let bytes = recv(fd, this.buf, this.off, this.len)
     if (bytes <= 0) {
       this.close()
       return true
     }
+    if (this.inBody) {
+      const { request } = this
+      if (request.bytes <= bytes) {
+        request.onBody(this.buf, request.bytes, this.off)
+        request.inBody = false
+        request.onEnd()
+        this.off += request.bytes
+        bytes -= request.bytes
+        request.bytes = 0
+      } else {
+        request.onBody(this.buf, bytes, this.off)
+        this.off = 0
+        return false
+      }
+    }
+    if (bytes === 0) return
     const [remaining, count] = parseRequests(this.buf, this.off + bytes, 0, answer)
     if (count < 0) {
       just.error(`parse failed ${count}`)
       this.close()
       return true
     }
-    this.response.pipeline = (count > 1)
+    // count will always be 1 if we have a body
+    if (count === 1) {
+      const request = this.request = new Request(fd, 0)
+      this.handler(request, this.response, this)
+      if (remaining > 0) {
+        if (remaining === bytes) {
+          const from = this.off + bytes - remaining
+          if (from > 0) {
+            just.print(`copyFrom ${remaining} bytes from ${from} to 0`)
+            this.buf.copyFrom(this.buf, 0, remaining, from)
+          }
+          this.off = remaining
+          return false
+        }
+        request.contentLength = parseInt(request.headers[CONTENT_LENGTH] || 0)
+        request.onBody(this.buf, remaining, this.off + bytes - remaining)
+        request.bytes = request.contentLength - remaining
+        if (request.bytes === 0) {
+          this.off = 0
+          request.onEnd()
+          this.inBody = false
+        } else {
+          this.inBody = true
+        }
+      } else {
+        this.off = 0
+        if (request.method === GET) return false
+        request.contentLength = parseInt(request.headers[CONTENT_LENGTH] || 0)
+        request.bytes = request.contentLength
+        if (request.bytes === 0) {
+          request.onEnd()
+          this.inBody = false
+        } else {
+          this.inBody = true
+        }
+      }
+      return false
+    }
+    this.response.pipeline = true
     for (let i = 0; i < count; i++) {
       const request = new Request(fd, i)
       // todo - get return code from handler to decide whether to end now or not
-      this.handler(request, this.response)
+      this.handler(request, this.response, this)
     }
-    this.response.finish()
     if (remaining > 0) {
       const from = this.off + bytes - remaining
       if (from > 0) {
@@ -229,9 +291,10 @@ class Socket {
         this.buf.copyFrom(this.buf, 0, remaining, from)
       }
       this.off = remaining
-      return false
+    } else {
+      this.off = 0
     }
-    this.off = 0
+    this.response.finish()
     return false
   }
 }
