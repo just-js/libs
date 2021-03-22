@@ -5,28 +5,12 @@ const { net } = just.library('net')
 
 const { parseRequests, getUrl, getMethod, getHeaders } = http
 const { EPOLLIN, EPOLLERR, EPOLLHUP } = epoll
-const { close, recv, accept, setsockopt, socket, bind, listen, sendString } = net
+const { close, recv, accept, setsockopt, socket, bind, listen, sendString, send } = net
 const { fcntl } = sys
 const { loop } = just.factory
 const { F_GETFL, F_SETFL } = just.sys
 const { IPPROTO_TCP, O_NONBLOCK, TCP_NODELAY, SO_KEEPALIVE, SOMAXCONN, AF_INET, SOCK_STREAM, SOL_SOCKET, SO_REUSEADDR, SO_REUSEPORT, SOCK_NONBLOCK } = just.net
 const { setInterval } = just
-
-const contentTypes = {
-  text: 'text/plain',
-  utf8: 'text/plain; charset=utf-8',
-  json: 'application/json; charset=utf-8',
-  html: 'text/html; charset=utf-8'
-}
-
-const statusMessages = {
-  200: 'OK',
-  201: 'Created',
-  204: 'OK',
-  400: 'Bad Request',
-  404: 'Not Found',
-  500: 'Server Error'
-}
 
 function createResponses (serverName) {
   // todo: expose this so it can be configured
@@ -81,7 +65,8 @@ class Response {
 
   end () {
     if (this.headers.length) this.headers = []
-    if (this.onFinish) this.onFinish(this)
+    if (this.onFinish) this.onFinish(this.socket.request, this)
+    this.status = 200
   }
 
   json (str) {
@@ -94,16 +79,16 @@ class Response {
     this.end()
   }
 
-  text (str) {
+  text (str, contentType = text) {
     if (this.pipeline) {
-      this.queue += `${text[this.status]}${str.length}${END}${str}`
+      this.queue += `${contentType[this.status]}${str.length}${END}${str}`
       return
     }
     if (this.headers.length) {
-      sendString(this.fd, `${text[this.status]}${str.length}${CRLF}${joinHeaders(this.headers)}${END}${str}`)
+      sendString(this.fd, `${contentType[this.status]}${str.length}${CRLF}${joinHeaders(this.headers)}${END}${str}`)
       return
     }
-    sendString(this.fd, `${text[this.status]}${str.length}${END}${str}`)
+    sendString(this.fd, `${contentType[this.status]}${str.length}${END}${str}`)
     this.end()
   }
 
@@ -116,12 +101,27 @@ class Response {
     this.end()
   }
 
-  utf8 (str) {
+  utf8 (str, contentType = utf8) {
     if (this.pipeline) {
-      this.queue += `${utf8[this.status]}${String.byteLength(str)}${END}${str}`
+      this.queue += `${contentType[this.status]}${String.byteLength(str)}${END}${str}`
       return
     }
-    sendString(this.fd, `${utf8[this.status]}${String.byteLength(str)}${END}${str}`)
+    if (this.headers.length) {
+      sendString(this.fd, `${contentType[this.status]}${String.byteLength(str)}${CRLF}${joinHeaders(this.headers)}${END}${str}`)
+      return
+    }
+    sendString(this.fd, `${contentType[this.status]}${String.byteLength(str)}${END}${str}`)
+    this.end()
+  }
+
+  raw (buf, contentType = octet) {
+    if (this.headers.length) {
+      sendString(this.fd, `${contentType[this.status]}${buf.byteLength}${CRLF}${joinHeaders(this.headers)}${END}`)
+      send(this.fd, buf, buf.byteLength, 0)
+      return
+    }
+    sendString(this.fd, `${contentType[this.status]}${buf.byteLength}${END}`)
+    send(this.fd, buf, buf.byteLength, 0)
     this.end()
   }
 
@@ -186,9 +186,6 @@ class Request {
   }
 }
 
-const CONTENT_LENGTH = 'Content-Length'
-const GET = 'GET'
-
 class Socket {
   constructor (fd, handler, onResponseComplete) {
     // todo - passing hooks in here is kinda ugly
@@ -200,6 +197,7 @@ class Socket {
     // TODO: should we have a response for each request in the pipeline?
     this.response = new Response(fd, onResponseComplete)
     this.request = new Request(0, 0)
+    this.response.socket = this
     this.inBody = false
   }
 
@@ -234,6 +232,7 @@ class Socket {
       }
     }
     if (bytes === 0) return
+    // TODO: we need to loop and keep parsing until all bytes are consumed
     const [remaining, count] = parseRequests(this.buf, this.off + bytes, 0, answer)
     if (count < 0) {
       just.error(`parse failed ${count}`)
@@ -334,7 +333,7 @@ class Server {
 
   serverError (req, res, err) {
     res.status = 500
-    res.text(err.stack)
+    res.text(err.toString())
   }
 
   match (url, method) {
@@ -358,6 +357,10 @@ class Server {
     if (typeof path === 'object') {
       if (path.constructor.name === 'RegExp') {
         this.regexHandlers[method].push({ handler, path })
+      } else if (path.constructor.name === 'Array') {
+        for (const p of path) {
+          this.staticHandlers[method][p] = handler
+        }
       }
     }
     return this
@@ -418,6 +421,14 @@ class Server {
     if (handler) {
       if (handler.opts) {
         if (handler.opts.qs) request.parse(true)
+        if (handler.opts.err) {
+          try {
+            handler(request, response)
+          } catch (err) {
+            this.serverError(request, response, err)
+          }
+          return
+        }
       }
       handler(request, response)
       return
@@ -427,6 +438,14 @@ class Server {
     if (handler) {
       if (handler.opts) {
         if (handler.opts.qs) request.parse(true)
+        if (handler.opts.err) {
+          try {
+            handler(request, response)
+          } catch (err) {
+            this.serverError(request, response, err)
+          }
+          return
+        }
       }
       handler(request, response)
       return
@@ -437,10 +456,19 @@ class Server {
       result[0](request, response)
       return
     }
-    if (this.defaultHandler.opts) {
-      if (this.defaultHandler.opts.qs) request.parse(true)
+    handler = this.defaultHandler
+    if (handler.opts) {
+      if (handler.opts.qs) request.parse(true)
+      if (handler.opts.err) {
+        try {
+          handler(request, response)
+        } catch (err) {
+          this.serverError(request, response, err)
+        }
+        return
+      }
     }
-    this.defaultHandler(request, response)
+    handler(request, response)
   }
 
   use (handler, post = false) {
@@ -499,13 +527,37 @@ class Server {
   }
 }
 
+const contentTypes = {
+  text: 'text/plain',
+  css: 'text/css',
+  utf8: 'text/plain; charset=utf-8',
+  json: 'application/json; charset=utf-8',
+  html: 'text/html; charset=utf-8',
+  octet: 'application/octet-stream'
+}
+const statusMessages = {
+  200: 'OK',
+  201: 'Created',
+  204: 'OK',
+  400: 'Bad Request',
+  404: 'Not Found',
+  500: 'Server Error'
+}
+const CONTENT_LENGTH = 'Content-Length'
+const GET = 'GET'
 const bufferSize = 64 * 1024
 const answer = [0, 0]
-const responses = { text: {}, utf8: {}, json: {}, html: {} }
+const responses = { text: {}, utf8: {}, json: {}, html: {}, css: {}, octet: {} }
+responses.ico = {}
+responses.png = {}
+responses.xml = {}
+contentTypes.ico = 'application/favicon'
+contentTypes.png = 'application/png'
+contentTypes.xml = 'application/xml; charset=utf-8'
 const END = '\r\n\r\n'
 const CRLF = '\r\n'
 const PATHSEP = '?'
-const { text, utf8, json, html } = responses
+const { text, utf8, json, html, octet } = responses
 const defaultOptions = {
   name: 'just',
   server: {
@@ -524,5 +576,7 @@ module.exports = {
     if (handler) server.default(handler)
     return server
   },
-  defaultOptions
+  defaultOptions,
+  responses,
+  contentTypes
 }

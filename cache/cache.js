@@ -12,10 +12,12 @@ class SimpleCache {
     this.miss = 0
   }
 
-  async get (key, expires = 60000) {
+  get (key, expires = this.defaultExpiration) {
     const entry = this.map.get(key)
     if (!entry) {
-      const value = await this.refresh(key)
+      // todo: stop thundering herd
+      const value = this.refresh(key)
+      if (!value) return null
       this.map.set(key, { value, ts: this.now })
       this.miss++
       return value
@@ -24,10 +26,40 @@ class SimpleCache {
       this.hit++
       return entry.value
     }
+    // stop anyone else re-fetching
+    entry.ts = this.now + 5000
+    // todo: we need to stop parallel requests
+    const value = this.refresh(key)
+    this.map.set(key, { value, ts: this.now })
+    this.miss++
+    return value
+  }
+
+  async getAsync (key, expires = this.defaultExpiration) {
+    const entry = this.map.get(key)
+    if (!entry) {
+      // todo: stop thundering herd
+      const value = await this.refresh(key)
+      if (!value) return null
+      this.map.set(key, { value, ts: this.now })
+      this.miss++
+      return value
+    }
+    if (this.now - entry.ts < expires) {
+      this.hit++
+      return entry.value
+    }
+    // stop anyone else re-fetching
+    entry.ts = this.now + 5000
+    // todo: we need to stop parallel requests
     const value = await this.refresh(key)
     this.map.set(key, { value, ts: this.now })
     this.miss++
     return value
+  }
+
+  delete (key) {
+    this.map.delete(key)
   }
 
   tick () {
