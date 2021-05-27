@@ -333,7 +333,7 @@ class Server {
 
   serverError (req, res, err) {
     res.status = 500
-    res.text(err.toString())
+    res.text(err.stack)
   }
 
   match (url, method) {

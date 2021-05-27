@@ -26,6 +26,7 @@ class SimpleCache {
       this.hit++
       return entry.value
     }
+    // we don't need this for sync
     // stop anyone else re-fetching
     entry.ts = this.now + 5000
     // todo: we need to stop parallel requests
