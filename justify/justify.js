@@ -333,7 +333,7 @@ class Server {
 
   serverError (req, res, err) {
     res.status = 500
-    res.text(err.stack)
+    res.text(err.toString())
   }
 
   match (url, method) {
@@ -412,6 +412,7 @@ class Server {
     if (this.hooks.pre.length) {
       for (const handler of this.hooks.pre) handler(request, response)
     }
+    if (response.complete) return
     const methodHandler = this.staticHandlers[request.method]
     if (!methodHandler) {
       this.defaultHandler(request, response)
@@ -539,7 +540,10 @@ const statusMessages = {
   200: 'OK',
   201: 'Created',
   204: 'OK',
+  101: 'Switching Protocols',
   400: 'Bad Request',
+  401: 'Unauthorized',
+  403: 'Forbidden',
   404: 'Not Found',
   500: 'Server Error'
 }

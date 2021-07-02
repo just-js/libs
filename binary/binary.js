@@ -76,7 +76,7 @@ ${AY}TCP  ${AD}:   ${AY}${pad(message.source, 5)}${AD} -> ${AY}${pad(message.des
 }
 
 function udpDump (packet) {
-  const { frame, header } = packet // eth frame, ip header, tcp message
+  const { frame, header, message } = packet // eth frame, ip header, udp message
   const [source, dest] = [b2ipv4(header.source), b2ipv4(header.dest)] // convert source and dest ip to human-readable
   return `
 ${AM}Eth  ${AD}: ${AM}${toMAC(frame.source)}${AD} -> ${AM}${toMAC(frame.dest)}${AD}
