@@ -160,6 +160,28 @@ class Request {
     return this._headers
   }
 
+  json () {
+    const req = this
+    return new Promise(resolve => {
+      let str = ''
+      req.onBody = (buf, len, off) => {
+        str += buf.readString(len, off)
+      }
+      req.onEnd = () => resolve(JSON.parse(str))
+    })
+  }
+
+  text () {
+    const req = this
+    return new Promise(resolve => {
+      let str = ''
+      req.onBody = (buf, len, off) => {
+        str += buf.readString(len, off)
+      }
+      req.onEnd = () => resolve(str)
+    })
+  }
+
   // todo: we need a drop replacement for this that is RFC compliant and safe
   parse (qs = false) {
     if (!qs && this.path) return
@@ -314,6 +336,7 @@ class Server {
     this.error = 0
     this.address = '127.0.0.1'
     this.port = 3000
+    this.stackTraces = false
   }
 
   connect (handler) {
@@ -331,8 +354,18 @@ class Server {
     res.text(`Not Found ${req.url}`)
   }
 
+  // todo: server.badRequest, server.forbidden, etc.
+
   serverError (req, res, err) {
     res.status = 500
+    if (this.stackTraces) {
+      res.text(`
+error: ${err.toString()}
+stack:
+${err.stack}
+`)
+      return
+    }
     res.text(err.toString())
   }
 
@@ -347,9 +380,17 @@ class Server {
   }
 
   addPath (path, handler, method, opts) {
+    const server = this
     if (opts) handler.opts = opts
     if (!this.staticHandlers[method]) this.staticHandlers[method] = {}
     if (!this.regexHandlers[method]) this.regexHandlers[method] = []
+    if (handler.constructor.name === 'AsyncFunction') {
+      if (handler.opts) {
+        handler.opts.async = true
+      } else {
+        handler.opts = { async: true }
+      }
+    }
     if (typeof path === 'string') {
       this.staticHandlers[method][path] = handler
       return
@@ -409,6 +450,7 @@ class Server {
   }
 
   handleRequest (request, response) {
+    const server = this
     if (this.hooks.pre.length) {
       for (const handler of this.hooks.pre) handler(request, response)
     }
@@ -422,6 +464,10 @@ class Server {
     if (handler) {
       if (handler.opts) {
         if (handler.opts.qs) request.parse(true)
+        if (handler.opts.async) {
+          handler(request, response).catch(err => server.serverError(request, response, err))
+          return
+        }
         if (handler.opts.err) {
           try {
             handler(request, response)
@@ -439,6 +485,10 @@ class Server {
     if (handler) {
       if (handler.opts) {
         if (handler.opts.qs) request.parse(true)
+        if (handler.opts.async) {
+          handler(request, response).catch(err => server.serverError(request, response, err))
+          return
+        }
         if (handler.opts.err) {
           try {
             handler(request, response)
@@ -551,13 +601,14 @@ const CONTENT_LENGTH = 'Content-Length'
 const GET = 'GET'
 const bufferSize = 64 * 1024
 const answer = [0, 0]
-const responses = { text: {}, utf8: {}, json: {}, html: {}, css: {}, octet: {} }
+const responses = { js: {}, text: {}, utf8: {}, json: {}, html: {}, css: {}, octet: {} }
 responses.ico = {}
 responses.png = {}
 responses.xml = {}
 contentTypes.ico = 'application/favicon'
 contentTypes.png = 'application/png'
 contentTypes.xml = 'application/xml; charset=utf-8'
+contentTypes.js = 'application/javascript; charset=utf-8'
 const END = '\r\n\r\n'
 const CRLF = '\r\n'
 const PATHSEP = '?'

@@ -42,7 +42,6 @@ function onSocketEvent (fd, event) {
       socket.parser.onResponses = count => {
         for (const res of socket.parser.get(count)) {
           socket.onResponse(res)
-          just.print(res.statusCode)
           if (res.statusCode === 200) {
             const contentLength = parseInt(res.headers['Content-Length'] || 0, 10)
             let total = 0
@@ -148,7 +147,7 @@ function parseUrl (url) {
   return { protocol, hostname, path }
 }
 
-function download (url) {
+function get (url) {
   const context = tls.clientContext(new ArrayBuffer(0))
   const { protocol, hostname, path } = parseUrl(url)
   const client = net.socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0)
@@ -183,9 +182,9 @@ function download (url) {
   return socket
 }
 
-function fetch (url, fileName) {
+function download (url, fileName) {
   return new Promise((resolve, reject) => {
-    const socket = download(url)
+    const socket = get(url)
     const { buf } = socket
     socket.onSecure = () => {
       socket.write(buf, buf.writeString(`GET ${socket.path} HTTP/1.1\r\nUser-Agent: curl/7.58.0\r\nAccept: */*\r\nHost: ${socket.hostname}\r\n\r\n`))
@@ -221,6 +220,31 @@ function fetch (url, fileName) {
         return
       }
       reject(new Error('Bad Status Code'), res)
+    }
+  })
+}
+
+function fetch (url) {
+  return new Promise((resolve, reject) => {
+    const socket = get(url)
+    const { buf } = socket
+    socket.onSecure = () => {
+      socket.write(buf, buf.writeString(`GET ${socket.path} HTTP/1.1\r\nUser-Agent: curl/7.58.0\r\nAccept: */*\r\nHost: ${socket.hostname}\r\n\r\n`))
+    }
+    socket.onResponse = res => {
+      const parts = []
+      res.size = 0
+      res.contentType = res.headers['Content-Type']
+      socket.onBody = bytes => {
+        parts.push(buf.readString(bytes, buf.offset))
+        res.size += bytes
+      }
+      socket.onComplete = err => {
+        if (err) return reject(err)
+        res.text = () => parts.join('')
+        res.json = () => JSON.parse(parts.join(''))
+        resolve(res)
+      }
     }
   })
 }

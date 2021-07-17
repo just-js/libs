@@ -115,9 +115,21 @@ function requestParser (buffer) {
   }
   buffer.offset = 0
   parser.parse = parse
-  parser.get = count => getRequests(count)
+  // TODO: fix this - expects an array of count 4 element arrays as second argument
+  parser.get = count => {
+    const requests = [[]]
+    getRequests(count, requests)
+    return requests.map(req => {
+      const [ path, version, methodLen, headers ] = req
+      return { path, version, methodLen, headers }
+    })
+  }
   parser.url = index => getUrl(index)
-  parser.headers = index => getHeaders(index)
+  parser.headers = index => {
+    const headers = {}
+    getHeaders(index, headers)
+    return headers
+  }
   parser.free = () => free.push(parser)
   return parser
 }
@@ -149,9 +161,21 @@ function responseParser (buffer) {
   }
   buffer.offset = 0
   parser.parse = parse
-  parser.get = count => getResponses(count)
-  parser.status = index => ({ code: getStatusCode(index), message: getStatusMessage(index) })
-  parser.headers = index => getHeaders(index)
+  // TODO: fix this - expects an array of count 4 element arrays as second argument
+  parser.get = count => {
+    const responses = [[]]
+    getResponses(count, responses)
+    return responses.map(res => {
+      const [ version, statusCode, statusMessage, headers ] = res
+      return { version, statusCode, statusMessage, headers }
+    })
+  }
+  parser.status = index => getStatusCode(index)
+  parser.headers = index => {
+    const headers = {}
+    getHeaders(index, headers)
+    return headers
+  }
   parser.free = () => free.push(parser)
   return parser
 }
