@@ -162,22 +162,22 @@ class Request {
 
   json () {
     const req = this
+    let str = ''
+    req.onBody = (buf, len, off) => {
+      str += buf.readString(len, off)
+    }
     return new Promise(resolve => {
-      let str = ''
-      req.onBody = (buf, len, off) => {
-        str += buf.readString(len, off)
-      }
       req.onEnd = () => resolve(JSON.parse(str))
     })
   }
 
   text () {
     const req = this
+    let str = ''
+    req.onBody = (buf, len, off) => {
+      str += buf.readString(len, off)
+    }
     return new Promise(resolve => {
-      let str = ''
-      req.onBody = (buf, len, off) => {
-        str += buf.readString(len, off)
-      }
       req.onEnd = () => resolve(str)
     })
   }
@@ -549,7 +549,7 @@ ${err.stack}
     loop.add(fd, (fd, event) => {
       if (checkError(fd, event)) return
       const newfd = accept(fd)
-      clientOptions(newfd, this.opts)
+      clientOptions(newfd, server.opts)
       let socket
       if (this.hooks.post.length) {
         socket = new Socket(newfd, requestHandler, onResponseComplete)
@@ -627,7 +627,8 @@ const defaultOptions = {
 
 module.exports = {
   createServer: (handler, opts = defaultOptions) => {
-    const server = new Server(opts)
+    const o = JSON.parse(JSON.stringify(defaultOptions))
+    const server = new Server(Object.assign(o, opts))
     if (handler) server.default(handler)
     return server
   },
