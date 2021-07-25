@@ -1,12 +1,29 @@
+// Foreground Colors
 const AD = '\u001b[0m' // ANSI Default
+const A0 = '\u001b[30m' // ANSI Black
+const AR = '\u001b[31m' // ANSI Red
+const AG = '\u001b[32m' // ANSI Green
 const AY = '\u001b[33m' // ANSI Yellow
+const AB = '\u001b[34m' // ANSI Blue
 const AM = '\u001b[35m' // ANSI Magenta
 const AC = '\u001b[36m' // ANSI Cyan
-const AG = '\u001b[32m' // ANSI Green
+const AW = '\u001b[37m' // ANSI White
 
-function dump (bytes, len = bytes.length, off = 0, width = 16, pos = 0) {
+// Background Colors
+const BD = '\u001b[0m' // ANSI Default
+const B0 = '\u001b[40m' // ANSI Black
+const BR = '\u001b[41m' // ANSI Red
+const BG = '\u001b[42m' // ANSI Green
+const BY = '\u001b[43m' // ANSI Yellow
+const BB = '\u001b[44m' // ANSI Blue
+const BM = '\u001b[45m' // ANSI Magenta
+const BC = '\u001b[46m' // ANSI Cyan
+const BW = '\u001b[47m' // ANSI White
+
+function dump (bytes, len = bytes.length, off = 0, width = 16, pos = 0, decimal = false) {
   const result = []
   const chars = []
+  const base = decimal ? 10 : 16
   for (let i = 0; i < len; i++) {
     if (i % width === 0) {
       if (i === 0) {
@@ -18,7 +35,7 @@ function dump (bytes, len = bytes.length, off = 0, width = 16, pos = 0) {
     }
     const boff = i + off
     if (i % 8 === 0) {
-      result.push(`${AG}${(boff).toString(16).padStart(5, ' ')}${AD}`)
+      result.push(`${AG}${(boff).toString(base).padStart(5, ' ')}${AD}`)
     }
     result.push(` ${bytes[boff].toString(16).padStart(2, '0')}`)
     if (bytes[boff] >= 32 && bytes[boff] <= 126) {
@@ -84,5 +101,7 @@ ${AG}${frame.protocol.padEnd(4, ' ')} ${AD}:  ${AG}${source}${AD} -> ${AG}${dest
 ${AY}UDP  ${AD}:`.trim()
 }
 
-const ANSI = { AD, AY, AM, AC, AG }
+const ANSI = { AD, AY, AM, AC, AG, AR }
+ANSI.colors = { fore: { AD, A0, AR, AG, AY, AB, AM, AC, AW }, back: { BD, B0, BR, BG, BY, BB, BM, BC, BW }}
+
 module.exports = { dump, ANSI, getFlags, htons16, toMAC, ipv42b, b2ipv4, tcpDump, udpDump }
