@@ -253,9 +253,10 @@ class Socket {
         return false
       }
     }
+    // TODO: shouldn't we close here?
     if (bytes === 0) return
     // TODO: we need to loop and keep parsing until all bytes are consumed
-    const [remaining, count] = parseRequests(this.buf, this.off + bytes, 0, answer)
+    const [count, remaining] = parseRequests(this.buf, this.off + bytes, 0, answer)
     if (count < 0) {
       just.error(`parse failed ${count}`)
       this.close()
