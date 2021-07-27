@@ -79,6 +79,7 @@ class Response {
     this.end()
   }
 
+  // todo: allow calling multiple times and then calling end
   text (str, contentType = text) {
     if (this.pipeline) {
       this.queue += `${contentType[this.status]}${str.length}${END}${str}`
@@ -218,7 +219,8 @@ class Socket {
     this.off = 0
     // TODO: should we have a response for each request in the pipeline?
     this.response = new Response(fd, onResponseComplete)
-    this.request = new Request(0, 0)
+    //this.request = new Request(0, 0)
+    this.request = null
     this.response.socket = this
     this.inBody = false
     const info = new ArrayBuffer(4)

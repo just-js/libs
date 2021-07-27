@@ -47,15 +47,14 @@ function call (query) {
         return
       }
       const { fields } = query
-      const rows = query.getRows().map(r => {
+      resolve(query.getRows().map(r => {
         const row = {}
         let i = 0
         for (const field of fields) {
           row[field.name] = r[i++]
         }
         return row
-      })
-      resolve(rows)
+      }))
     })
   })
 }
@@ -69,15 +68,14 @@ function append (query, syncIt) {
         return
       }
       const { fields } = query
-      const rows = query.getRows().map(r => {
+      resolve(query.getRows().map(r => {
         const row = {}
         let i = 0
         for (const field of fields) {
           row[field.name] = r[i++]
         }
         return row
-      })
-      resolve(rows)
+      }))
     }, syncIt)
   })
 }
