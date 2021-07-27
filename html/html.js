@@ -186,7 +186,7 @@ class Parser {
         if (this.args.some(arg => arg === variable)) {
           source.push(`html += ${name}`)
         } else {
-          source.push(`html += ${this.this}[${name}]`)
+          source.push(`html += ${this.this}.${name}`)
         }
       }
     } else {

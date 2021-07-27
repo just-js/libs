@@ -72,7 +72,7 @@ function terminateMessage () {
   const dv = new DataView(buf)
   dv.setUint8(0, 88) // 'X'
   dv.setUint32(1, 4)
-  return buf  
+  return buf
 }
 
 function createParser (buf) {

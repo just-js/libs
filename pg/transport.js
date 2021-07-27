@@ -24,6 +24,7 @@ function getMessageName (type) {
       name = key
       return true
     }
+    return false
   })
   return { type, code, name }
 }
@@ -101,7 +102,7 @@ function setupSocket (sock, config) {
     fun.send = () => {
       const r = sock.write(fun.buffer, fun.buffer.offset, 0)
       if (r < len) {
-        just.error('short write')
+        just.error(`short write offset ${fun.buffer.offset} r ${r} len ${len}`)
       }
       fun.buffer.offset = 0
     }
