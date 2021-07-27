@@ -3,7 +3,7 @@ const { http } = just.library('http')
 const { sys } = just.library('sys')
 const { net } = just.library('net')
 
-const { parseRequests, getUrl, getMethod, getHeaders } = http
+const { parseRequestsHandle5, createHandle, getUrl, getMethod, getHeaders } = http
 const { EPOLLIN, EPOLLERR, EPOLLHUP } = epoll
 const { close, recv, accept, setsockopt, socket, bind, listen, sendString, send } = net
 const { fcntl } = sys
@@ -221,6 +221,9 @@ class Socket {
     this.request = new Request(0, 0)
     this.response.socket = this
     this.inBody = false
+    const info = new ArrayBuffer(4)
+    this.dv = new DataView(info)
+    this.parser = createHandle(this.buf, info)
   }
 
   close () {
@@ -253,10 +256,14 @@ class Socket {
         return false
       }
     }
+    const { dv } = this
     // TODO: shouldn't we close here?
     if (bytes === 0) return
     // TODO: we need to loop and keep parsing until all bytes are consumed
-    const [count, remaining] = parseRequests(this.buf, this.off + bytes, 0, answer)
+    parseRequestsHandle5(this.parser, this.off + bytes, 0, answer)
+    const r = dv.getUint32(0, true)
+    const count = r & 0xff
+    const remaining = r >> 16
     if (count < 0) {
       just.error(`parse failed ${count}`)
       this.close()
@@ -381,7 +388,6 @@ ${err.stack}
   }
 
   addPath (path, handler, method, opts) {
-    const server = this
     if (opts) handler.opts = opts
     if (!this.staticHandlers[method]) this.staticHandlers[method] = {}
     if (!this.regexHandlers[method]) this.regexHandlers[method] = []

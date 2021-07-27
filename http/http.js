@@ -1,10 +1,10 @@
 const { http } = just.library('http')
 const {
-  parseResponses,
   getResponses,
-  parseRequests,
+  parseRequestsHandle5,
+  parseResponsesHandle5,
+  createHandle,
   getStatusCode,
-  getStatusMessage,
   getHeaders,
   getRequests,
   getUrl
@@ -12,6 +12,7 @@ const {
 
 const free = []
 
+// todo: use picohttpparser for this
 function chunkedParser (buf) {
   let inHeader = true
   let offset = 0
@@ -94,11 +95,15 @@ function requestParser (buffer) {
     parser.buffer.offset = 0
     return parser
   }
-  const answer = [0]
-  const parser = { buffer }
+  const info = new ArrayBuffer(4)
+  const dv = new DataView(info)
+  const parser = createHandle(buffer, info)
   function parse (bytes, off = 0) {
     const { offset } = buffer
-    const [remaining, count] = parseRequests(buffer, offset + bytes, off, answer)
+    parseRequestsHandle5(parser, offset + bytes, off)
+    const r = dv.getUint32(0, true)
+    const count = r & 0xff
+    const remaining = r >> 16
     if (count > 0) {
       parser.onRequests(count)
     }
@@ -120,7 +125,7 @@ function requestParser (buffer) {
     const requests = [[]]
     getRequests(count, requests)
     return requests.map(req => {
-      const [ path, version, methodLen, headers ] = req
+      const [path, version, methodLen, headers] = req
       return { path, version, methodLen, headers }
     })
   }
@@ -140,11 +145,15 @@ function responseParser (buffer) {
     parser.buffer.offset = 0
     return parser
   }
-  const answer = [0]
-  const parser = { buffer }
+  const info = new ArrayBuffer(4)
+  const dv = new DataView(info)
+  const parser = createHandle(buffer, info)
   function parse (bytes, off = 0) {
-    const [remaining, count] = parseResponses(buffer, buffer.offset + bytes, buffer.offset, answer)
     const { offset } = buffer
+    parseResponsesHandle5(parser, offset + bytes, off)
+    const r = dv.getUint32(0, true)
+    const count = r & 0xff
+    const remaining = r >> 16
     if (remaining > 0) {
       const start = offset + bytes - remaining
       buffer.offset = start
@@ -152,6 +161,7 @@ function responseParser (buffer) {
       if (count > 0) {
         parser.onResponses(count)
       }
+      // todo?
     } else {
       if (count > 0) {
         parser.onResponses(count)
@@ -166,7 +176,7 @@ function responseParser (buffer) {
     const responses = [[]]
     getResponses(count, responses)
     return responses.map(res => {
-      const [ version, statusCode, statusMessage, headers ] = res
+      const [version, statusCode, statusMessage, headers] = res
       return { version, statusCode, statusMessage, headers }
     })
   }

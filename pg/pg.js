@@ -39,6 +39,7 @@ function compile (sock, query) {
 function call (query) {
   return new Promise((resolve, reject) => {
     // todo allow specifying start and end of rows
+    // this is very slow!!
     query.call(err => {
       if (err) return reject(err)
       if (query.raw) {
@@ -105,10 +106,9 @@ function execute (sock, sql) {
 
 function getStatus (sock) {
   const { parser } = sock
-  const { fields, query, buf, dv, u8, len } = parser
-  const { start, rows } = query
-  let off = start
-  just.print(`getStatus(${off}, ${len})`)
+  const { query, len } = parser
+  const { start } = query
+  just.print(`getStatus(${start}, ${len})`)
 }
 
 function getRows (connection) {
@@ -236,7 +236,7 @@ class Connection {
 
   status () {
     const { parser } = this.sock
-    const { query, status, errors, type } = parser
+    const { query, status, errors } = parser
     return { count: query.rows, status: String.fromCharCode(status), errors: errors.slice(0) }
   }
 
@@ -247,7 +247,6 @@ class Connection {
 
 // helper functions
 const { constants } = pg
-const { CommandComplete } = constants.messageTypes
 const { INT4OID } = constants.fieldTypes
 
 const statSql = `
@@ -305,7 +304,6 @@ FROM (SELECT
   }).join('')
 }
 
-
 function getIds (count) {
   const updates = []
   for (let i = 1; i < (count * 2); i += 2) {
@@ -339,7 +337,57 @@ async function compileBatchUpdate (db, name, table, field, id, updates = 5, flus
   return query
 }
 
-function compileMultiQuery (query, argFn = () => []) {
+function queryHandler (query, results, resolve, reject, final = false) {
+  return err => {
+    if (err) return reject(err)
+    if (query.raw) {
+      results.push(query.getRows())
+      if (final) resolve(results)
+      return
+    }
+    const { fields } = query
+    const rows = query.getRows().map(r => {
+      const row = {}
+      let i = 0
+      for (const field of fields) {
+        row[field.name] = r[i++]
+      }
+      return row
+    })
+    results.push(rows)
+    if (final) resolve(results)
+  }
+}
+
+function compileMultiQuery (q, argFn = () => []) {
+  const results = []
+  const { query } = q
+  return (n = 1) => {
+    return new Promise((resolve, reject) => {
+      for (let i = 1; i < n; i++) {
+        query.params = argFn()
+        query.append(queryHandler(query, results, resolve, reject), false)
+      }
+      query.params = argFn()
+      query.append(queryHandler(query, results, resolve, reject, true), true)
+      results.length = 0
+      query.send()
+    })
+  }
+}
+
+/*
+function onMulti () {
+  const [id, randomNumber] = getWorldById.getRows()[0]
+  results.push({ id, randomNumber })
+  if (results.length === queries) {
+    const json = JSON.stringify(results)
+    sock.writeString(`${rJSON}${json.length}${END}${json}`)
+    queries = 0
+  }
+}
+
+function compileMultiQuery2 (query, argFn = () => []) {
   return (n = 1) => {
     const promises = []
     for (let i = 1; i < n; i++) {
@@ -349,6 +397,18 @@ function compileMultiQuery (query, argFn = () => []) {
     query.send()
     return Promise.all(promises)
   }
+}
+*/
+
+async function createConnectionPool (dbConfig, poolSize, onConnect) {
+  const clients = []
+  for (let i = 0; i < poolSize; i++) {
+    const db = new Connection(dbConfig)
+    await db.connect()
+    await onConnect(db)
+    clients.push(db)
+  }
+  return clients
 }
 
 async function getStats (db, tables = []) {
@@ -362,4 +422,4 @@ async function getStats (db, tables = []) {
   }, {})
 }
 
-module.exports = { Connection, Query, pg, getRows, compile: compileQuery, getStats, compileBatchUpdate, compileMultiQuery }
+module.exports = { createConnectionPool, Connection, Query, pg, getRows, compile: compileQuery, getStats, compileBatchUpdate, compileMultiQuery }

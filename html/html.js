@@ -1,14 +1,21 @@
 const fs = require('fs')
-const { readFile, readFileBytes } = fs
+const { readFileBytes } = fs
 const path = require('path')
-const { baseName, fileName } = path
+const { baseName } = path
 
 const rx = [
   [/`/g, '&#96;'], // replace backticks
-  [/\$\{([^}]+)\}/g, '&dollar;{$1}'] // replace literal variables - ${x}
+  [/\$\{([^}]+)\}/g, '&dollar;{$1}'], // replace literal variables - ${x}
+  [/\n?\s+?([<{])/g, '$1']
 ]
 
-function sanitize (str) {
+function sanitize (str, removeWhiteSpace = false) {
+  if (removeWhiteSpace) {
+    return str.trim()
+      .replace(rx[2][0], rx[2][1])
+      .replace(rx[0][0], rx[0][1])
+      .replace(rx[1][0], rx[1][1])
+  }
   return str
     .replace(rx[0][0], rx[0][1])
     .replace(rx[1][0], rx[1][1])
@@ -72,13 +79,14 @@ class Tokenizer {
 }
 
 class Parser {
-  constructor (root = '') {
+  constructor (root = '', rawStrings = true) {
     this.source = []
     this.args = []
     this.command = ''
     this.depth = 0
     this.this = 'this'
     this.root = root
+    this.rawStrings = rawStrings
     this.plugins = {}
   }
 
@@ -99,7 +107,11 @@ class Parser {
     const { source } = this
     const { type } = token
     if (type === 'string') {
-      source.push(`html += String.raw\`${sanitize(token.value)}\``)
+      if (this.rawStrings) {
+        source.push(`html += String.raw\`${sanitize(token.value)}\``)
+      } else {
+        source.push(`html += "${sanitize(token.value, true)}"`)
+      }
       return
     }
     const { name, value } = token.value
@@ -174,7 +186,7 @@ class Parser {
         if (this.args.some(arg => arg === variable)) {
           source.push(`html += ${name}`)
         } else {
-          source.push(`html += ${this.this}.${name}`)
+          source.push(`html += ${this.this}[${name}]`)
         }
       }
     } else {
@@ -193,21 +205,21 @@ class Parser {
 
 let index = 0
 
-function compile (template, name = 'template', root = '', plugins = {}) {
+function compile (template, name = 'template', root = '', opts) {
+  const { plugins = {}, rawStrings } = opts
   const tokenizer = new Tokenizer()
   tokenizer.tokenize(template)
-  const parser = new Parser(root)
+  const parser = new Parser(root, rawStrings)
   parser.plugins = plugins
   parser.all(tokenizer.tokens)
-  // Function.apply(this, [...parser.args, parser.source.join('\n')])
   const call = just.vm.compile(parser.source.join('\n'), `${name}${index++}.js`, parser.args, [])
   return { call, tokenizer, parser, template }
 }
 
-function load (fileName, opts = { compile: true, plugins: {} }) {
+function load (fileName, opts = { rawStrings: true, compile: true, plugins: {} }) {
   const template = readFileBytes(fileName)
   if (template === -1) return
-  if (opts.compile) return compile(template, fileName, baseName(fileName), opts.plugins).call
+  if (opts.compile) return compile(template, fileName, baseName(fileName), opts).call
   return template
 }
 
