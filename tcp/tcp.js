@@ -171,7 +171,12 @@ function createClient (address = '127.0.0.1', port = 3000) {
     return written
   }
   sock.writeString = str => net.sendString(fd, str)
-
+  sock.setNoDelay = (on = 1) => {
+    net.setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, on)
+  }
+  sock.setKeepAlive = (on = 1) => {
+    net.setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, on)
+  }
   sock.close = () => closeSocket(sock)
 
   function connect () {
