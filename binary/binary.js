@@ -93,7 +93,7 @@ ${AY}TCP  ${AD}:   ${AY}${pad(message.source, 5)}${AD} -> ${AY}${pad(message.des
 }
 
 function udpDump (packet) {
-  const { frame, header, message } = packet // eth frame, ip header, udp message
+  const { frame, header } = packet // eth frame, ip header, udp message
   const [source, dest] = [b2ipv4(header.source), b2ipv4(header.dest)] // convert source and dest ip to human-readable
   return `
 ${AM}Eth  ${AD}: ${AM}${toMAC(frame.source)}${AD} -> ${AM}${toMAC(frame.dest)}${AD}
@@ -101,7 +101,27 @@ ${AG}${frame.protocol.padEnd(4, ' ')} ${AD}:  ${AG}${source}${AD} -> ${AG}${dest
 ${AY}UDP  ${AD}:`.trim()
 }
 
-const ANSI = { AD, AY, AM, AC, AG, AR }
-ANSI.colors = { fore: { AD, A0, AR, AG, AY, AB, AM, AC, AW }, back: { BD, B0, BR, BG, BY, BB, BM, BC, BW }}
+const ANSI = { AD, AY, AM, AC, AG, AR, AB }
+ANSI.colors = { fore: { AD, A0, AR, AG, AY, AB, AM, AC, AW }, back: { BD, B0, BR, BG, BY, BB, BM, BC, BW } }
+const HOME = '\u001b[0;0H' // set cursor to 0,0
+const CLS = '\u001b[2J' // clear screen
+const EL = '\u001b[K' // erase line
+const SAVECUR = '\u001b[s' // save cursor
+const RESTCUR = '\u001b[u' // restore cursor
+const HIDE = '\u001b[?25l' // hide cursor
+const SHOW = '\u001b[?25h' // show cursor
+ANSI.control = {
+  home: () => HOME,
+  move: (x = 0, y = 0) => `\u001b[${x};${y}H`,
+  column: x => `\u001b[${x}G`,
+  cls: () => CLS,
+  eraseLine: () => EL,
+  cursor: {
+    hide: () => HIDE,
+    show: () => SHOW,
+    save: () => SAVECUR,
+    restore: () => RESTCUR
+  }
+}
 
 module.exports = { dump, ANSI, getFlags, htons16, toMAC, ipv42b, b2ipv4, tcpDump, udpDump }
