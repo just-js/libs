@@ -3,7 +3,7 @@ const { http } = just.library('http')
 const { sys } = just.library('sys')
 const { net } = just.library('net')
 
-const { parseRequestsHandle5, createHandle, getUrl, getMethod, getHeaders } = http
+const { parseRequestsHandle, createHandle, getUrl, getMethod, getHeaders } = http
 const { EPOLLIN, EPOLLERR, EPOLLHUP } = epoll
 const { close, recv, accept, setsockopt, socket, bind, listen, sendString, send } = net
 const { fcntl } = sys
@@ -262,7 +262,7 @@ class Socket {
     // TODO: shouldn't we close here?
     if (bytes === 0) return
     // TODO: we need to loop and keep parsing until all bytes are consumed
-    parseRequestsHandle5(this.parser, this.off + bytes, 0, answer)
+    parseRequestsHandle(this.parser, this.off + bytes, 0, answer)
     const r = dv.getUint32(0, true)
     const count = r & 0xff
     const remaining = r >> 16
@@ -545,8 +545,10 @@ ${err.stack}
     if (fd < 1) return fd
     this.fd = fd
     serverOptions(fd, this.opts)
-    bind(fd, address, port)
-    this.error = listen(fd, maxConn)
+    let r = bind(fd, address, port)
+    if (r < 0) return r
+    r = listen(fd, maxConn)
+    if (r < 0) return r
     const server = this
     const { sockets } = server
     const requestHandler = (request, response) => this.handleRequest(request, response)
@@ -635,7 +637,7 @@ const defaultOptions = {
 }
 
 module.exports = {
-  createServer: (handler, opts = defaultOptions) => {
+  createServer: (opts = defaultOptions, handler) => {
     const o = JSON.parse(JSON.stringify(defaultOptions))
     const server = new Server(Object.assign(o, opts))
     if (handler) server.default(handler)

@@ -1,6 +1,7 @@
 const { createClient } = require('@tcp')
 const { lookup } = require('@dns')
 const md5 = require('@md5')
+const { html } = just.library('html')
 
 // Constants
 const PG_VERSION = 0x00030000
@@ -204,7 +205,7 @@ class Messaging {
     view.setUint16(off, fields.length)
     off += 2
     for (let i = 0; i < fields.length; i++) {
-      view.setUint16(off, fields[i].format)
+      view.setUint16(off, fields[i].format.format)
       off += 2
     }
     offsets.len = off - offsets.start
@@ -221,6 +222,7 @@ class Query {
     this.bindings = []
     this.exec = null
     this.prepare = null
+    this.htmlEscape = html.escape
   }
 
   setup () {
@@ -288,16 +290,16 @@ class Query {
 
     const source = []
 
-    source.push('  const { sock } = this')
+    source.push('  const { sock, htmlEscape } = this')
     source.push('  const { state, dv, buf, u8 } = sock.parser')
     source.push('  const { start, rows } = state')
     source.push('  let off = start + 7')
     source.push('  let len = 0')
     source.push('  if (rows === 1) {')
     for (const field of fields) {
-      const { name, oid, format } = field
+      const { name, oid, format, htmlEscape } = field
       if (oid === INT4OID) {
-        if (format === constants.formats.Binary) {
+        if (format.format === constants.formats.Binary) {
           source.push(`    const ${name} = dv.getInt32(off + 4)`)
           source.push('    off += 8')
         } else {
@@ -309,10 +311,14 @@ class Query {
       } else if (oid === VARCHAROID) {
         source.push('    len = dv.getUint32(off)')
         source.push('    off += 4')
-        if (format === constants.formats.Binary) {
+        if (format.format === constants.formats.Binary) {
           source.push(`    const ${name} = buf.slice(off, off + len)`)
         } else {
-          source.push(`    const ${name} = buf.readString(len, off)`)
+          if (htmlEscape) {
+            source.push(`    const ${name} = htmlEscape(buf, len, off)`)
+          } else {
+            source.push(`    const ${name} = buf.readString(len, off)`)
+          }
         }
         source.push('    off += len')
       }
@@ -323,9 +329,9 @@ class Query {
     source.push('  off = start + 7')
     source.push('  for (let i = 0; i < rows; i++) {')
     for (const field of fields) {
-      const { name, oid, format } = field
+      const { name, oid, format, htmlEscape } = field
       if (oid === INT4OID) {
-        if (format === constants.formats.Binary) {
+        if (format.format === constants.formats.Binary) {
           source.push(`    const ${name} = dv.getInt32(off + 4)`)
           source.push('    off += 8')
         } else {
@@ -337,10 +343,14 @@ class Query {
       } else if (oid === VARCHAROID) {
         source.push('    len = dv.getInt32(off)')
         source.push('    off += 4')
-        if (format === constants.formats.Binary) {
+        if (format.format === constants.formats.Binary) {
           source.push(`    const ${name} = buf.slice(len, off)`)
         } else {
-          source.push(`    const ${name} = buf.readString(len, off)`)
+          if (htmlEscape) {
+            source.push(`    const ${name} = htmlEscape(buf, len, off)`)
+          } else {
+            source.push(`    const ${name} = buf.readString(len, off)`)
+          }
         }
         source.push('    off += len')
       }
@@ -444,12 +454,16 @@ class Query {
     const results = []
     let done = 0
     return new Promise((resolve, reject) => {
-      args.forEach(args => callbacks.push(err => {
+      args.forEach(args => callbacks.push((err, rows) => {
         if (err) {
           reject(err)
           return
         }
         // read the results from this query
+        if (rows === 0) {
+          resolve()
+          return
+        }
         if (n === 1) {
           resolve(batch.read())
           return
@@ -620,7 +634,7 @@ function createParser (buf) {
             state.start = 0
             return
           }
-          just.error(`copyFrom 0 ${remaining} ${off}`)
+          just.error(`copyFrom 1 ${remaining} ${off}`)
           buf.copyFrom(buf, 0, remaining, off)
           buf.offset = remaining
           parseNext = 0
@@ -637,14 +651,14 @@ function createParser (buf) {
         if (byteLength - off < 1024) {
           if (state.running) {
             const queryLen = off - state.start + remaining
-            just.error(`copyFrom 0 ${queryLen} ${state.start}`)
+            just.error(`copyFrom 2 ${queryLen} ${state.start} ${byteLength} ${off} ${byteLength - off}`)
             buf.copyFrom(buf, 0, queryLen, state.start)
             buf.offset = queryLen
             parseNext = off - state.start
             state.start = 0
             return
           }
-          just.error(`copyFrom 0 ${remaining} ${off}`)
+          just.error(`copyFrom 3 ${remaining} ${off}`)
           buf.copyFrom(buf, 0, remaining, off)
           buf.offset = remaining
           parseNext = 0
@@ -838,7 +852,7 @@ async function createConnection (config) {
   sock.authenticated = false
 
   const defaultAction = (...args) => callbacks.shift()(...args)
-  const defaults = [CommandComplete, CloseComplete, AuthenticationOk, ParseComplete, NoData]
+  const defaults = [CloseComplete, AuthenticationOk, ParseComplete, NoData]
   const actions = {}
   defaults.forEach(type => {
     actions[type] = defaultAction
@@ -853,6 +867,7 @@ async function createConnection (config) {
   actions[ErrorResponse] = () => {
     defaultAction(new Error(JSON.stringify(parser.errors, null, '  ')))
   }
+  actions[CommandComplete] = () => defaultAction(null, parser.state.rows)
   actions[RowDescription] = () => {
     if (sock.callbacks[0].isExec) return
     defaultAction()
@@ -889,7 +904,7 @@ async function createConnection (config) {
 
 function connect (config, poolSize = 1) {
   if (poolSize === 1) {
-    return createConnection(config)
+    return Promise.all([createConnection(config)])
   }
   const connections = []
   for (let i = 0; i < poolSize; i++) {
