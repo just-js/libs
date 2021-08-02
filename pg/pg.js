@@ -202,10 +202,30 @@ class Messaging {
         off += buffer.writeString(params[i], off)
       }
     }
-    view.setUint16(off, fields.length)
-    off += 2
-    for (let i = 0; i < fields.length; i++) {
-      view.setUint16(off, fields[i].format.format)
+    if (fields.length > 0) {
+      const format = fields[0].format.format
+      let same = true
+      for (let i = 1; i < fields.length; i++) {
+        if (fields[i].format.format !== format) {
+          same = false
+          break
+        }
+      }
+      if (same) {
+        view.setUint16(off, 1)
+        off += 2
+        view.setUint16(off, fields[0].format.format)
+        off += 2
+      } else {
+        view.setUint16(off, fields.length)
+        off += 2
+        for (let i = 0; i < fields.length; i++) {
+          view.setUint16(off, fields[i].format.format)
+          off += 2
+        }
+      }
+    } else {
+      view.setUint16(off, 0)
       off += 2
     }
     offsets.len = off - offsets.start
@@ -248,14 +268,12 @@ class Query {
     }
     const sync = m.createSyncMessage()
     m.off = sync.off
-    let flush = m.createFlushMessage()
-    m.off = flush.off
     const p = new Messaging(new ArrayBuffer(prepareDescribeLen), query)
     const prepare = p.createPrepareMessage()
     p.off = prepare.off
     const describe = p.createDescribeMessage()
     p.off = describe.off
-    flush = p.createFlushMessage()
+    const flush = p.createFlushMessage()
     p.off = flush.off
     this.exec = m
     this.prepare = p
@@ -818,7 +836,11 @@ function connectSocket (config, buffer) {
       config.address = ip
       const sock = createClient(ip, port)
       sock.onClose = () => {
-        if (!connected) reject(new Error('Could Not Connect'))
+        if (!connected) {
+          reject(new Error('Could Not Connect'))
+          return
+        }
+        // what to do if connection drops?
       }
       sock.onConnect = err => {
         if (err) {

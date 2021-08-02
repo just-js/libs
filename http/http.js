@@ -1,8 +1,8 @@
 const { http } = just.library('http')
 const {
   getResponses,
-  parseRequestsHandle5,
-  parseResponsesHandle5,
+  parseRequestsHandle,
+  parseResponsesHandle,
   createHandle,
   getStatusCode,
   getHeaders,
@@ -100,7 +100,7 @@ function requestParser (buffer) {
   const parser = createHandle(buffer, info)
   function parse (bytes, off = 0) {
     const { offset } = buffer
-    parseRequestsHandle5(parser, offset + bytes, off)
+    parseRequestsHandle(parser, offset + bytes, off)
     const r = dv.getUint32(0, true)
     const count = r & 0xff
     const remaining = r >> 16
@@ -150,7 +150,7 @@ function responseParser (buffer) {
   const parser = createHandle(buffer, info)
   function parse (bytes, off = 0) {
     const { offset } = buffer
-    parseResponsesHandle5(parser, offset + bytes, off)
+    parseResponsesHandle(parser, offset + bytes, off)
     const r = dv.getUint32(0, true)
     const count = r & 0xff
     const remaining = r >> 16
