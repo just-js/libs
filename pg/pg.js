@@ -240,6 +240,7 @@ class Query {
     this.query = query
     this.size = size
     this.bindings = []
+    this.params = []
     this.exec = null
     this.prepare = null
     this.htmlEscape = html.escape
@@ -295,10 +296,11 @@ class Query {
 
   compile () {
     const { query, source } = this
-    const { read, write } = source
+    const { read, writeSingle, writeBatch } = source
     // todo. needs to be compiled in a separate context
     if (read.length) this.read = just.vm.compile(read, `${query.name}r.js`, [], [])
-    if (write.length) this.write = just.vm.compile(write, `${query.name}w.js`, ['batchArgs', 'first'], [])
+    if (writeBatch.length) this.writeBatch = just.vm.compile(writeBatch, `${query.name}w.js`, ['batchArgs', 'first'], [])
+    if (writeSingle.length) this.writeSingle = just.vm.compile(writeSingle, `${query.name}s.js`, ['first'], [])
     return this
   }
 
@@ -436,12 +438,47 @@ class Query {
       source.push('  next++')
       source.push('}')
     }
-    const write = source.join('\n')
-    this.source = { read, write }
+    const writeBatch = source.join('\n')
+
+    source.length = 0
+    if (params.length) {
+      source.push('const { bindings, exec, query } = this')
+      source.push('const { params } = query')
+      source.push('const { view, buffer } = exec')
+      source.push('  const { paramStart } = bindings[0]')
+      source.push('  let off = paramStart')
+      for (let i = 0; i < params.length; i++) {
+        // should be checking the oid?
+        if ((formats[i] || formats[0]).oid === INT4OID) {
+          if ((formats[i] || formats[0]).format === constants.formats.Binary) {
+            source.push(`  view.setUint32(off + 4, params[${i}])`)
+            source.push('  off += 8')
+          } else {
+            source.push(`  const val = params[${i}]).toString()`)
+            source.push('  view.setUint32(off, val.length)')
+            source.push('  off += 4')
+            source.push('  off += buffer.writeString(val, off)')
+          }
+        } else {
+          if ((formats[i] || formats[0]).format === constants.formats.Binary) {
+            source.push(`  const paramString = params[${i}].toString()`)
+            source.push('  view.setUint32(paramStart, paramString.length)')
+            source.push('  off += 4')
+            source.push('  off += buffer.writeString(paramString, off)')
+          } else {
+            source.push(`  const buf = params[${i}]`)
+            source.push('  view.setUint32(paramStart, buf.byteLength)')
+            source.push('  off += 4')
+            source.push('  off += buffer.copyFrom(buf, off, buf.byteLength, 0)')
+          }
+        }
+      }
+    }
+    const writeSingle = source.join('\n')
+    this.source = { read, writeBatch, writeSingle }
     return this
   }
 
-  // todo - allow this to be compiled
   write (args, first) {}
 
   // read the current rows from the buffers - to be overridden
@@ -451,7 +488,7 @@ class Query {
 
   // the 1 or more of the batch queries, passing in an array of arguments
   // for each query we are running. args = [[a,b],[a,c],[b.c]] or [a,b,c]
-  run (args = [[]]) {
+  runBatch (args = [[]]) {
     const batch = this
     const { sock, size, bindings, exec } = this
     const { callbacks } = sock
@@ -459,7 +496,7 @@ class Query {
     const n = args.length
     const first = size - n
     // write the arguments into the query buffers
-    batch.write(args, first)
+    batch.writeBatch(args, first)
     // write the queries onto the wire
     let r = 0
     if (n < size) {
@@ -489,6 +526,30 @@ class Query {
         results.push(batch.read())
         if (++done === n) resolve(results)
       }))
+    })
+  }
+
+  runSingle () {
+    const batch = this
+    const { sock, bindings, exec } = batch
+    const { callbacks } = sock
+    const { buffer } = exec
+    batch.writeSingle()
+    const start = bindings[0].offsets.start
+    const r = sock.write(buffer, exec.off - start, start)
+    if (r <= 0) return Promise.reject(new Error('Bad Write'))
+    return new Promise((resolve, reject) => {
+      callbacks.push((err, rows) => {
+        if (err) {
+          reject(err)
+          return
+        }
+        if (rows === 0) {
+          resolve()
+          return
+        }
+        resolve(batch.read())
+      })
     })
   }
 }
