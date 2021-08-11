@@ -300,7 +300,7 @@ class Query {
     // todo. needs to be compiled in a separate context
     if (read.length) this.read = just.vm.compile(read, `${query.name}r.js`, [], [])
     if (writeBatch.length) this.writeBatch = just.vm.compile(writeBatch, `${query.name}w.js`, ['batchArgs', 'first'], [])
-    if (writeSingle.length) this.writeSingle = just.vm.compile(writeSingle, `${query.name}s.js`, ['first'], [])
+    if (writeSingle.length) this.writeSingle = just.vm.compile(writeSingle, `${query.name}s.js`, [], [])
     return this
   }
 
@@ -394,7 +394,6 @@ class Query {
       source.push('  const { paramStart } = bindings[next + first]')
       source.push('  let off = paramStart')
       for (let i = 0; i < params.length; i++) {
-        // should be checking the oid?
         if ((formats[i] || formats[0]).oid === INT4OID) {
           if ((formats[i] || formats[0]).format === constants.formats.Binary) {
             if (params.length === 1) {
@@ -442,34 +441,32 @@ class Query {
 
     source.length = 0
     if (params.length) {
-      source.push('const { bindings, exec, query } = this')
+      source.push('const { bindings, exec, query, size } = this')
       source.push('const { params } = query')
       source.push('const { view, buffer } = exec')
-      source.push('  const { paramStart } = bindings[0]')
-      source.push('  let off = paramStart')
+      source.push('let off = bindings[size - 1].paramStart')
       for (let i = 0; i < params.length; i++) {
-        // should be checking the oid?
         if ((formats[i] || formats[0]).oid === INT4OID) {
           if ((formats[i] || formats[0]).format === constants.formats.Binary) {
-            source.push(`  view.setUint32(off + 4, params[${i}])`)
-            source.push('  off += 8')
+            source.push(`view.setUint32(off + 4, params[${i}])`)
+            source.push('off += 8')
           } else {
-            source.push(`  const val = params[${i}]).toString()`)
-            source.push('  view.setUint32(off, val.length)')
-            source.push('  off += 4')
-            source.push('  off += buffer.writeString(val, off)')
+            source.push(`const val = params[${i}]).toString()`)
+            source.push('view.setUint32(off, val.length)')
+            source.push('off += 4')
+            source.push('off += buffer.writeString(val, off)')
           }
         } else {
           if ((formats[i] || formats[0]).format === constants.formats.Binary) {
-            source.push(`  const paramString = params[${i}].toString()`)
-            source.push('  view.setUint32(paramStart, paramString.length)')
-            source.push('  off += 4')
-            source.push('  off += buffer.writeString(paramString, off)')
+            source.push(`const buf = params[${i}]`)
+            source.push('view.setUint32(off, buf.byteLength)')
+            source.push('off += 4')
+            source.push('off += buffer.copyFrom(buf, off, buf.byteLength, 0)')
           } else {
-            source.push(`  const buf = params[${i}]`)
-            source.push('  view.setUint32(paramStart, buf.byteLength)')
-            source.push('  off += 4')
-            source.push('  off += buffer.copyFrom(buf, off, buf.byteLength, 0)')
+            source.push(`const paramString = params[${i}].toString()`)
+            source.push('view.setUint32(off, paramString.length)')
+            source.push('off += 4')
+            source.push('off += buffer.writeString(paramString, off)')
           }
         }
       }
@@ -531,11 +528,11 @@ class Query {
 
   runSingle () {
     const batch = this
-    const { sock, bindings, exec } = batch
+    const { sock, size, exec, bindings } = batch
     const { callbacks } = sock
     const { buffer } = exec
-    batch.writeSingle()
-    const start = bindings[0].offsets.start
+    if (batch.writeSingle) batch.writeSingle()
+    const start = bindings[size - 1].offsets.start
     const r = sock.write(buffer, exec.off - start, start)
     if (r <= 0) return Promise.reject(new Error('Bad Write'))
     return new Promise((resolve, reject) => {
