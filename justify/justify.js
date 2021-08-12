@@ -264,7 +264,7 @@ class Socket {
     // TODO: we need to loop and keep parsing until all bytes are consumed
     parseRequestsHandle(this.parser, this.off + bytes, 0, answer)
     const r = dv.getUint32(0, true)
-    const count = r & 0xff
+    const count = r & 0xffff
     const remaining = r >> 16
     if (count < 0) {
       just.error(`parse failed ${count}`)
