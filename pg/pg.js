@@ -103,7 +103,7 @@ class Messaging {
     view.setUint16(off, formats.length)
     off += 2
     for (let i = 0; i < formats.length; i++) {
-      view.setUint32(off, formats[i].oid)
+      view.setUint32(off, formats[i].format.oid)
       off += 4
     }
     offsets.len = off - offsets.start
@@ -322,8 +322,8 @@ class Query {
     source.push('  let len = 0')
     source.push('  if (rows === 1) {')
     for (const field of fields) {
-      const { name, oid, format, htmlEscape } = field
-      if (oid === INT4OID) {
+      const { name, format, htmlEscape } = field
+      if (format.oid === INT4OID) {
         if (format.format === constants.formats.Binary) {
           source.push(`    const ${name} = dv.getInt32(off + 4)`)
           source.push('    off += 8')
@@ -333,7 +333,7 @@ class Query {
           source.push(`    const ${name} = parseInt(buf.readString(len, off), 10)`)
           source.push('    off += len')
         }
-      } else if (oid === VARCHAROID) {
+      } else if (format.oid === VARCHAROID) {
         source.push('    len = dv.getUint32(off)')
         source.push('    off += 4')
         if (format.format === constants.formats.Binary) {
@@ -354,8 +354,8 @@ class Query {
     source.push('  off = start + 7')
     source.push('  for (let i = 0; i < rows; i++) {')
     for (const field of fields) {
-      const { name, oid, format, htmlEscape } = field
-      if (oid === INT4OID) {
+      const { name, format, htmlEscape } = field
+      if (format.oid === INT4OID) {
         if (format.format === constants.formats.Binary) {
           source.push(`    const ${name} = dv.getInt32(off + 4)`)
           source.push('    off += 8')
@@ -365,7 +365,7 @@ class Query {
           source.push(`    const ${name} = parseInt(buf.readString(len, off), 10)`)
           source.push('    off += len')
         }
-      } else if (oid === VARCHAROID) {
+      } else if (format.oid === VARCHAROID) {
         source.push('    len = dv.getInt32(off)')
         source.push('    off += 4')
         if (format.format === constants.formats.Binary) {
@@ -1004,4 +1004,39 @@ function connect (config, poolSize = 1) {
   return Promise.all(connections)
 }
 
-module.exports = { constants, connect }
+/**
+ * Generate a Bulk Update SQL statement definition which can be passed to
+ * sock.create. For a given table, identity column and column to be updated, it 
+ * will generate a single SQL statement to update all fields in one statement
+ *
+ * @param {string} table   - The name of the table
+ * @param {string} field   - The name of the field we want to update
+ * @param {string} id      - The name of the id field
+ * @param {string} updates - The number of rows to update in the statement
+ * @param {string} type    - The name of the table
+ */
+function generateBulkUpdate (table, field, id, updates = 5, type = constants.BinaryInt) {
+  function getIds (count) {
+    const updates = []
+    for (let i = 1; i < (count * 2); i += 2) {
+      updates.push(`$${i}`)
+    }
+    return updates.join(',')
+  }
+  function getClauses (count) {
+    const clauses = []
+    for (let i = 1; i < (count * 2); i += 2) {
+      clauses.push(`when $${i} then $${i + 1}`)
+    }
+    return clauses.join('\n')
+  }
+  const formats = [type]
+  const sql = []
+  sql.push(`update ${table} set ${field} = CASE ${id}`)
+  sql.push(getClauses(updates))
+  sql.push(`else ${field}`)
+  sql.push(`end where ${id} in (${getIds(updates)})`)
+  return { formats, name: `${updates}`, params: updates * 2, sql: sql.join('\n') }
+}
+
+module.exports = { constants, connect, generateBulkUpdate }
