@@ -184,9 +184,9 @@ class Request {
   }
 
   // todo: we need a drop replacement for this that is RFC compliant and safe
-  parse (qs = false) {
-    if (!qs && this.path) return
-    if (qs && this.query) return
+  parseUrl (qs = false) {
+    if (!qs && this.path) return this
+    if (qs && this.query) return this
     const { url } = this
     const i = url.indexOf(PATHSEP)
     if (i > -1) {
@@ -198,7 +198,7 @@ class Request {
     }
     if (qs) {
       // parse the querystring
-      if (!this.qs) return
+      if (!this.qs) return this
       this.query = this.qs.split('&')
         .map(p => p.split('='))
         .reduce((o, p) => {
@@ -206,20 +206,18 @@ class Request {
           return o
         }, {})
     }
+    return this
   }
 }
 
 class Socket {
   constructor (fd, handler, onResponseComplete) {
-    // todo - passing hooks in here is kinda ugly
     this.fd = fd
     this.handler = handler
     this.buf = new ArrayBuffer(bufferSize)
     this.len = this.buf.byteLength
     this.off = 0
-    // TODO: should we have a response for each request in the pipeline?
     this.response = new Response(fd, onResponseComplete)
-    //this.request = new Request(0, 0)
     this.request = null
     this.response.socket = this
     this.inBody = false
@@ -274,7 +272,7 @@ class Socket {
     // count will always be 1 if we have a body
     if (count === 1) {
       const request = this.request = new Request(fd, 0)
-      this.handler(request, this.response, this)
+      this.handler(this.response, request, this)
       if (remaining > 0) {
         if (remaining === bytes) {
           const from = this.off + bytes - remaining
@@ -313,7 +311,7 @@ class Socket {
     for (let i = 0; i < count; i++) {
       const request = new Request(fd, i)
       // todo - get return code from handler to decide whether to end now or not
-      this.handler(request, this.response, this)
+      this.handler(this.response, request, this)
     }
     if (remaining > 0) {
       const from = this.off + bytes - remaining
@@ -359,14 +357,14 @@ class Server {
     return this
   }
 
-  notFound (req, res) {
+  notFound (res, req) {
     res.status = 404
     res.text(`Not Found ${req.url}`)
   }
 
   // todo: server.badRequest, server.forbidden, etc.
 
-  serverError (req, res, err) {
+  serverError (res, req, err) {
     res.status = 500
     if (this.stackTraces) {
       res.text(`
@@ -458,77 +456,77 @@ ${err.stack}
     just.clearInterval(this.timer)
   }
 
-  handleRequest (request, response) {
+  handleRequest (response, request) {
     const server = this
     if (this.hooks.pre.length) {
-      for (const handler of this.hooks.pre) handler(request, response)
+      for (const handler of this.hooks.pre) handler(response, request)
     }
     if (response.complete) return
     const methodHandler = this.staticHandlers[request.method]
     if (!methodHandler) {
-      this.defaultHandler(request, response)
+      this.defaultHandler(response, request)
       return
     }
     let handler = methodHandler[request.url]
     if (handler) {
       if (handler.opts) {
-        if (handler.opts.qs) request.parse(true)
+        //if (handler.opts.qs) request.parse(true)
         if (handler.opts.async) {
-          handler(request, response).catch(err => server.serverError(request, response, err))
+          handler(response, request).catch(err => server.serverError(response, request, err))
           return
         }
         if (handler.opts.err) {
           try {
-            handler(request, response)
+            handler(response, request)
           } catch (err) {
-            this.serverError(request, response, err)
+            this.serverError(response, request, err)
           }
           return
         }
       }
-      handler(request, response)
+      handler(response, request)
       return
     }
-    request.parse()
+    request.parseUrl()
     handler = methodHandler[request.path]
     if (handler) {
       if (handler.opts) {
-        if (handler.opts.qs) request.parse(true)
+        //if (handler.opts.qs) request.parse(true)
         if (handler.opts.async) {
-          handler(request, response).catch(err => server.serverError(request, response, err))
+          handler(response, request).catch(err => server.serverError(response, request, err))
           return
         }
         if (handler.opts.err) {
           try {
-            handler(request, response)
+            handler(response, request)
           } catch (err) {
-            this.serverError(request, response, err)
+            this.serverError(response, request, err)
           }
           return
         }
       }
-      handler(request, response)
+      handler(response, request)
       return
     }
     const result = this.match(request.path, request.method)
     if (result[0]) {
       request.params = result[1]
-      result[0](request, response)
+      result[0](response, request)
       return
     }
     handler = this.defaultHandler
     if (handler.opts) {
-      if (handler.opts.qs) request.parse(true)
+      //if (handler.opts.qs) request.parse(true)
       if (handler.opts.err) {
         try {
-          handler(request, response)
+          handler(response, request)
         } catch (err) {
-          this.serverError(request, response, err)
+          this.serverError(response, request, err)
         }
         return
       }
     }
-    handler(request, response)
+    handler(response, request)
   }
 
   use (handler, post = false) {
@@ -551,10 +549,10 @@ ${err.stack}
     if (r < 0) return r
     const server = this
     const { sockets } = server
-    const requestHandler = (request, response) => this.handleRequest(request, response)
-    function onResponseComplete (request, response) {
+    const requestHandler = (response, request) => this.handleRequest(response, request)
+    function onResponseComplete (response, request) {
       if (server.hooks.post.length) {
-        for (const handler of server.hooks.post) handler(request, response)
+        for (const handler of server.hooks.post) handler(response, request)
       }
     }
     loop.add(fd, (fd, event) => {
