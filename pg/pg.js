@@ -268,18 +268,20 @@ class Query {
       m.off = exec.off
     }
     const p = new Messaging(new ArrayBuffer(prepareDescribeLen), query)
-    const prepare = p.createPrepareMessage()
-    p.off = prepare.off
-    const describe = p.createDescribeMessage()
-    p.off = describe.off
-    const flush = p.createFlushMessage()
-    p.off = flush.off
+    p.off = p.createPrepareMessage().off
+    p.off = p.createDescribeMessage().off
+    p.off = p.createFlushMessage().off
 
     const s = new Messaging(new ArrayBuffer(syncLen), query)
     const sync = s.createSyncMessage()
     s.off = sync.off
 
+    const f = new Messaging(new ArrayBuffer(flushLen), query)
+    const flush = f.createSyncMessage()
+    f.off = flush.off
+
     this.exec = m
+    this.flush = f
     this.prepare = p
     this.sync = s
 
@@ -535,6 +537,12 @@ class Query {
     const { sock, sync } = this
     const { buffer } = sync
     return sock.write(buffer, sync.off, 0)
+  }
+
+  purge () {
+    const { sock, flush } = this
+    const { buffer } = flush
+    return sock.write(buffer, flush.off, 0)
   }
 
   runSingle () {

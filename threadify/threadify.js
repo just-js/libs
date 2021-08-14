@@ -1,9 +1,7 @@
 const threading = just.library('thread')
 const { readFile } = require('fs')
 
-const { spawn } = threading.thread
-
-function threadify (main) {
+function spawn (main) {
   if (just.sys.tid() !== just.sys.pid()) {
     main().catch(err => just.error(err.stack))
     return
@@ -15,7 +13,7 @@ function threadify (main) {
   const threads = []
   const cpus = parseInt(just.env().CPUS || just.sys.cpus, 10)
   for (let i = 0; i < cpus; i++) {
-    threads.push(spawn(source, just.builtin('just.js'), just.args))
+    threads.push(threading.thread.spawn(source, just.builtin('just.js'), just.args))
   }
   just.setInterval(() => {
     const { user, system } = just.cpuUsage()
@@ -26,4 +24,4 @@ function threadify (main) {
   }, 1000)
 }
 
-module.exports = { threadify }
+module.exports = { spawn }
