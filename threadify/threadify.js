@@ -1,12 +1,13 @@
 const threading = just.library('thread')
 const { readFile } = require('fs')
+const { fileName } = require('path')
 
 function spawn (main) {
   if (just.sys.tid() !== just.sys.pid()) {
     main().catch(err => just.error(err.stack))
     return
   }
-  let source = just.builtin(`${just.args[0]}.js`)
+  let source = just.builtin(`${fileName(just.args[0])}.js`)
   if (!source) {
     source = readFile(just.args[1])
   }
