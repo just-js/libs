@@ -243,6 +243,8 @@ class Query {
     this.params = []
     this.exec = null
     this.prepare = null
+    this.pending = 0
+    this.syncing = 0
     this.htmlEscape = html.escape
   }
 
@@ -257,16 +259,18 @@ class Query {
     // todo: we need to know size of variable length params
     const execLen = 6 + query.portal.length + 4
     const syncLen = 5
-    const bindExecLen = flushLen + syncLen + (size * (bindLen + execLen))
+    const bindExecLen = syncLen + (size * (bindLen + execLen))
     const prepareDescribeLen = prepareLen + describeLen + flushLen
-    const m = new Messaging(new ArrayBuffer(bindExecLen), query)
+    const e = new Messaging(new ArrayBuffer(bindExecLen), query)
     for (let i = 0; i < size; i++) {
-      const bind = m.createBindMessage()
+      const bind = e.createBindMessage()
       bindings.push(bind)
-      m.off = bind.off
-      const exec = m.createExecMessage()
-      m.off = exec.off
+      e.off = bind.off
+      const exec = e.createExecMessage()
+      e.off = exec.off
     }
+    e.off = e.createSyncMessage().off
+
     const p = new Messaging(new ArrayBuffer(prepareDescribeLen), query)
     p.off = p.createPrepareMessage().off
     p.off = p.createDescribeMessage().off
@@ -280,7 +284,7 @@ class Query {
     const flush = f.createSyncMessage()
     f.off = flush.off
 
-    this.exec = m
+    this.exec = e
     this.flush = f
     this.prepare = p
     this.sync = s
@@ -307,7 +311,7 @@ class Query {
     // todo. needs to be compiled in a separate context
     if (read.length) this.read = just.vm.compile(read, `${query.name}r.js`, [], [])
     if (writeBatch.length) this.writeBatch = just.vm.compile(writeBatch, `${query.name}w.js`, ['batchArgs', 'first'], [])
-    if (writeSingle.length) this.writeSingle = just.vm.compile(writeSingle, `${query.name}s.js`, [], [])
+    if (writeSingle.length) this.writeSingle = just.vm.compile(writeSingle, `${query.name}s.js`, ['off'], [])
     return this
   }
 
@@ -448,10 +452,9 @@ class Query {
 
     source.length = 0
     if (params.length) {
-      source.push('const { bindings, exec, query, size } = this')
+      source.push('const { exec, query } = this')
       source.push('const { params } = query')
       source.push('const { view, buffer } = exec')
-      source.push('let off = bindings[size - 1].paramStart')
       for (let i = 0; i < params.length; i++) {
         if ((formats[i] || formats[0]).oid === INT4OID) {
           if ((formats[i] || formats[0]).format === constants.formats.Binary) {
@@ -550,12 +553,27 @@ class Query {
     const { sock, size, exec, bindings } = batch
     const { callbacks } = sock
     const { buffer } = exec
-    if (batch.writeSingle) batch.writeSingle()
-    const start = bindings[size - 1].offsets.start
-    const r = sock.write(buffer, exec.off - start, start)
-    if (r <= 0) return Promise.reject(new Error('Bad Write'))
+    const binding = bindings[size - 1]
+    if (batch.writeSingle) batch.writeSingle(binding.paramStart)
+    const start = binding.offsets.start
+    const threshold = Math.floor(this.pending / 4)
+    if (this.pending === 0 || this.pending < 8 || this.syncing > threshold) {
+      const r = sock.write(buffer, exec.off - start, start)
+      if (r <= 0) return Promise.reject(new Error('Bad Write'))
+      this.syncing = 0
+    } else {
+      const r = sock.write(buffer, exec.off - 5 - start, start)
+      if (r <= 0) return Promise.reject(new Error('Bad Write'))
+      this.syncing++
+    }
+    this.pending++
     return new Promise((resolve, reject) => {
       callbacks.push((err, rows) => {
+        batch.pending--
+        if (batch.syncing > 0 && batch.syncing >= batch.pending) {
+          batch.commit()
+          batch.syncing = 0
+        }
         if (err) {
           reject(err)
           return
@@ -990,7 +1008,7 @@ async function createConnection (config) {
     query.params = Array(config.params || 0).fill(0)
     if (!query.fields) query.fields = []
     if (!query.formats) query.formats = []
-    if (!query.maxRows) query.maxRows = 100
+    if (!query.maxRows) query.maxRows = 0
     return (new Query(sock, query, size)).setup().generate().compile().create()
   }
   sock.onData = parser.parse
