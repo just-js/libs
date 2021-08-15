@@ -246,6 +246,11 @@ class Query {
     this.pending = 0
     this.syncing = 0
     this.htmlEscape = html.escape
+    this.synced = 0
+    if (query.batchMode === undefined) {
+      query.batchMode = true
+    }
+    this.batchMode = query.batchMode
   }
 
   setup () {
@@ -499,24 +504,30 @@ class Query {
     const batch = this
     const { sock, size, bindings, exec } = this
     const { callbacks } = sock
-    const { buffer, off } = exec
+    const { buffer } = exec
     const n = args.length
     const first = size - n
     // write the arguments into the query buffers
     batch.writeBatch(args, first)
     // write the queries onto the wire
-    let r = 0
-    if (n < size) {
-      const start = bindings[first].offsets.start
-      r = sock.write(buffer, exec.off - start, start)
+    const start = bindings[first].offsets.start
+    const threshold = Math.floor(this.pending / 4)
+    // to do buffer the batches and turn off nagle
+    if (!this.batchMode || (this.pending < 8 || this.syncing > threshold)) {
+      const r = sock.write(buffer, exec.off - start, start)
+      if (r <= 0) return Promise.reject(new Error('Bad Write'))
+      this.syncing = 0
     } else {
-      r = sock.write(buffer, off, 0)
+      const r = sock.write(buffer, exec.off - 5 - start, start)
+      if (r <= 0) return Promise.reject(new Error('Bad Write'))
+      this.syncing++
     }
-    if (r <= 0) return Promise.reject(new Error('Bad Write'))
+    this.pending++
     const results = []
     let done = 0
     return new Promise((resolve, reject) => {
       args.forEach(args => callbacks.push((err, rows) => {
+        // todo: what about the rest of the inflight callbacks?
         if (err) {
           reject(err)
           return
@@ -527,11 +538,23 @@ class Query {
           return
         }
         if (n === 1) {
+          batch.pending--
+          if (batch.syncing > 0 && batch.syncing >= batch.pending) {
+            batch.commit()
+            batch.syncing = 0
+          }
           resolve([batch.read()])
           return
         }
         results.push(batch.read())
-        if (++done === n) resolve(results)
+        if (++done === n) {
+          batch.pending--
+          if (batch.syncing > 0 && batch.syncing >= batch.pending) {
+            batch.commit()
+            batch.syncing = 0
+          }
+          resolve(results)
+        }
       }))
     })
   }
@@ -557,7 +580,8 @@ class Query {
     if (batch.writeSingle) batch.writeSingle(binding.paramStart)
     const start = binding.offsets.start
     const threshold = Math.floor(this.pending / 4)
-    if (this.pending === 0 || this.pending < 8 || this.syncing > threshold) {
+    // to do buffer the batches and turn off nagle
+    if (!this.batchMode || (this.pending < 8 || this.syncing > threshold)) {
       const r = sock.write(buffer, exec.off - start, start)
       if (r <= 0) return Promise.reject(new Error('Bad Write'))
       this.syncing = 0
@@ -943,6 +967,8 @@ function connectSocket (config, buffer) {
           return
         }
         connected = true
+        if (config.noDelay) sock.setNoDelay()
+        // if we do this and buffer the writes
         resolve(sock)
         return buffer
       }
