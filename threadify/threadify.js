@@ -7,22 +7,21 @@ function spawn (main) {
     main().catch(err => just.error(err.stack))
     return
   }
+  const cpus = parseInt(just.env().CPUS || just.sys.cpus, 10)
+  if (cpus === 1) {
+    // if only one thread specified, then just run main in the current thread
+    main().catch(err => just.error(err.stack))
+    return [just.sys.pid()]
+  }
   let source = just.builtin(`${fileName(just.args[0])}.js`)
   if (!source) {
     source = readFile(just.args[1])
   }
   const threads = []
-  const cpus = parseInt(just.env().CPUS || just.sys.cpus, 10)
   for (let i = 0; i < cpus; i++) {
     threads.push(threading.thread.spawn(source, just.builtin('just.js'), just.args))
   }
-  just.setInterval(() => {
-    const { user, system } = just.cpuUsage()
-    const { rss } = just.memoryUsage()
-    const totalMem = Math.floor(Number(rss) / (1024 * 1024))
-    const memPerThread = Math.floor((totalMem / cpus) * 100) / 100
-    just.print(`threads ${threads.length} mem ${totalMem} MB / ${memPerThread} MB cpu (${user.toFixed(2)}/${system.toFixed(2)}) ${(user + system).toFixed(2)}`)
-  }, 1000)
+  return threads
 }
 
 module.exports = { spawn }
