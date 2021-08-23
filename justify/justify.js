@@ -470,7 +470,6 @@ ${err.stack}
     let handler = methodHandler[request.url]
     if (handler) {
       if (handler.opts) {
-        //if (handler.opts.qs) request.parse(true)
         if (handler.opts.async) {
           handler(response, request).catch(err => server.serverError(response, request, err))
           return
@@ -491,7 +490,6 @@ ${err.stack}
     handler = methodHandler[request.path]
     if (handler) {
       if (handler.opts) {
-        //if (handler.opts.qs) request.parse(true)
         if (handler.opts.async) {
           handler(response, request).catch(err => server.serverError(response, request, err))
           return
@@ -516,7 +514,6 @@ ${err.stack}
     }
     handler = this.defaultHandler
     if (handler.opts) {
-      //if (handler.opts.qs) request.parse(true)
       if (handler.opts.err) {
         try {
           handler(response, request)
