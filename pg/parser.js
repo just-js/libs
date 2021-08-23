@@ -143,7 +143,6 @@ class Parser {
         // D = DataRow
         if (this.nextRow === 0) this.state.start = off - 5
         parser.nextRow++
-        //parser.onMessage()
         return off + len - 4
       },
       0: (len, off) => {
@@ -157,7 +156,6 @@ class Parser {
   resetBuffer (off, remaining) {
     const { buf, state } = this
     const queryLen = off - state.start + remaining
-    just.error(`copyFrom ${queryLen} ${state.start}`)
     buf.copyFrom(buf, 0, queryLen, state.start)
     buf.offset = queryLen
     this.parseNext = off - state.start
