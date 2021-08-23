@@ -2,54 +2,12 @@ const { createClient } = require('@tcp')
 const { lookup } = require('@dns')
 const md5 = require('@md5')
 const { html } = just.library('html')
-
-// Constants
-const PG_VERSION = 0x00030000
-
-const constants = {
-  AuthenticationMD5Password: 5,
-  formats: {
-    Text: 0,
-    Binary: 1
-  },
-  fieldTypes: {
-    INT4OID: 23,
-    VARCHAROID: 1043
-  },
-  messageTypes: {
-    AuthenticationOk: 82,
-    ErrorResponse: 69,
-    RowDescription: 84,
-    CommandComplete: 67,
-    ParseComplete: 49,
-    CloseComplete: 51,
-    BindComplete: 50,
-    ReadyForQuery: 90,
-    BackendKeyData: 75,
-    ParameterStatus: 83,
-    ParameterDescription: 116,
-    DataRow: 68,
-    NoData: 110
-  }
-}
+const common = require('common.js')
+const parser = require('parser.js')
+const { constants } = common
+const { createParser } = parser
 
 const { INT4OID, VARCHAROID } = constants.fieldTypes
-const messageNames = {}
-Object.keys(constants.messageTypes).forEach(k => {
-  messageNames[constants.messageTypes[k]] = k
-})
-constants.messageNames = messageNames
-
-constants.BinaryInt = {
-  format: constants.formats.Binary,
-  oid: INT4OID
-}
-
-constants.VarChar = {
-  format: constants.formats.Text,
-  oid: VARCHAROID
-}
-
 const {
   AuthenticationOk,
   ErrorResponse,
@@ -63,14 +21,6 @@ const {
   BindComplete
 } = constants.messageTypes
 
-// Utilities
-function readCString (buf, u8, off) {
-  const start = off
-  while (u8[off] !== 0) off++
-  return buf.readString(off - start, start)
-}
-
-// Protocol
 class Messaging {
   constructor (buffer, config) {
     const { sql, formats, portal, name, params, fields, maxRows = 100 } = config
@@ -247,10 +197,7 @@ class Query {
     this.syncing = 0
     this.htmlEscape = html.escape
     this.synced = 0
-    if (query.batchMode === undefined) {
-      query.batchMode = true
-    }
-    this.batchMode = query.batchMode
+    this.last = null
   }
 
   setup () {
@@ -273,7 +220,9 @@ class Query {
       e.off = bind.off
       const exec = e.createExecMessage()
       e.off = exec.off
+      bind.eoff = exec.off
     }
+    this.last = bindings[size - 1]
     e.off = e.createSyncMessage().off
 
     const p = new Messaging(new ArrayBuffer(prepareDescribeLen), query)
@@ -492,34 +441,27 @@ class Query {
   }
 
   write (args, first) {}
+  writeSingle (off) {}
 
   // read the current rows from the buffers - to be overridden
   read () {
     return []
   }
 
-  // the 1 or more of the batch queries, passing in an array of arguments
-  // for each query we are running. args = [[a,b],[a,c],[b.c]] or [a,b,c]
   runBatch (args = [[]]) {
     const batch = this
-    const { sock, size, bindings, exec } = this
+    const { sock, size, bindings, sync, exec } = this
     const { callbacks } = sock
     const { buffer } = exec
     const n = args.length
     const first = size - n
-    // write the arguments into the query buffers
     batch.writeBatch(args, first)
-    // write the queries onto the wire
     const start = bindings[first].offsets.start
-    const threshold = Math.floor(this.pending / 4)
-    // to do buffer the batches and turn off nagle
-    if (!this.batchMode || (this.pending < 8 || this.syncing > threshold)) {
-      const r = sock.write(buffer, exec.off - start, start)
-      if (r <= 0) return Promise.reject(new Error('Bad Write'))
+    if (this.syncing >= this.pending) {
+      sock.append(buffer, exec.off - start, start, true)
       this.syncing = 0
     } else {
-      const r = sock.write(buffer, exec.off - 5 - start, start)
-      if (r <= 0) return Promise.reject(new Error('Bad Write'))
+      sock.append(buffer, exec.off - 5 - start, start, false)
       this.syncing++
     }
     this.pending++
@@ -540,7 +482,7 @@ class Query {
         if (n === 1) {
           batch.pending--
           if (batch.syncing > 0 && batch.syncing >= batch.pending) {
-            batch.commit()
+            sock.append(sync.buffer, sync.off, 0, true)
             batch.syncing = 0
           }
           resolve([batch.read()])
@@ -550,7 +492,7 @@ class Query {
         if (++done === n) {
           batch.pending--
           if (batch.syncing > 0 && batch.syncing >= batch.pending) {
-            batch.commit()
+            sock.append(sync.buffer, sync.off, 0, true)
             batch.syncing = 0
           }
           resolve(results)
@@ -559,35 +501,21 @@ class Query {
     })
   }
 
-  commit () {
-    const { sock, sync } = this
-    const { buffer } = sync
-    return sock.write(buffer, sync.off, 0)
-  }
-
-  purge () {
-    const { sock, flush } = this
-    const { buffer } = flush
-    return sock.write(buffer, flush.off, 0)
-  }
-
-  runSingle () {
+  runSingle (commit = false) {
     const batch = this
-    const { sock, size, exec, bindings } = batch
+    const { sock, exec, sync } = batch
+    const binding = batch.bindings[batch.syncing]
+    const first = batch.bindings[0]
     const { callbacks } = sock
     const { buffer } = exec
-    const binding = bindings[size - 1]
-    if (batch.writeSingle) batch.writeSingle(binding.paramStart)
-    const start = binding.offsets.start
-    const threshold = Math.floor(this.pending / 4)
-    // to do buffer the batches and turn off nagle
-    if (!this.batchMode || (this.pending < 8 || this.syncing > threshold)) {
-      const r = sock.write(buffer, exec.off - start, start)
-      if (r <= 0) return Promise.reject(new Error('Bad Write'))
+    const { paramStart } = binding
+    batch.writeSingle(paramStart)
+    const start = first.offsets.start
+    if (commit || this.syncing >= this.pending || this.syncing === 64) {
+      sock.append(buffer, binding.eoff - start, start, false)
+      sock.append(sync.buffer, sync.off, 0, true)
       this.syncing = 0
     } else {
-      const r = sock.write(buffer, exec.off - 5 - start, start)
-      if (r <= 0) return Promise.reject(new Error('Bad Write'))
       this.syncing++
     }
     this.pending++
@@ -595,7 +523,9 @@ class Query {
       callbacks.push((err, rows) => {
         batch.pending--
         if (batch.syncing > 0 && batch.syncing >= batch.pending) {
-          batch.commit()
+          const binding = batch.bindings[batch.syncing - 1]
+          sock.append(buffer, binding.eoff - start, start, false)
+          sock.append(sync.buffer, sync.off, 0, true)
           batch.syncing = 0
         }
         if (err) {
@@ -612,259 +542,6 @@ class Query {
   }
 }
 
-function createParser (buf) {
-  let nextRow = 0
-  let parseNext = 0
-  let parameters = {}
-  const state = { start: 0, end: 0, rows: 0, running: false }
-
-  function onDataRow (len, off) {
-    // D = DataRow
-    if (nextRow === 0) state.start = off - 5
-    nextRow++
-    return off + len - 4
-  }
-
-  function onCommandComplete (len, off) {
-    // C = CommandComplete
-    state.end = off - 5
-    state.rows = nextRow
-    state.running = false
-    off += len - 4
-    nextRow = 0
-    parser.onMessage()
-    return off
-  }
-
-  function onCloseComplete (len, off) {
-    // 3 = CloseComplete
-    parser.onMessage()
-    return off + len - 4
-  }
-
-  function onRowDescripton (len, off) {
-    // T = RowDescription
-    const fieldCount = dv.getInt16(off)
-    off += 2
-    fields.length = 0
-    for (let i = 0; i < fieldCount; i++) {
-      const name = readCString(buf, u8, off)
-      off += name.length + 1
-      const tid = dv.getInt32(off)
-      off += 4
-      const attrib = dv.getInt16(off)
-      off += 2
-      const oid = dv.getInt32(off)
-      off += 4
-      const size = dv.getInt16(off)
-      off += 2
-      const mod = dv.getInt32(off)
-      off += 4
-      const format = dv.getInt16(off)
-      off += 2
-      fields.push({ name, tid, attrib, oid, size, mod, format })
-    }
-    parser.onMessage()
-    return off
-  }
-
-  function onAuthenticationOk (len, off) {
-    // R = AuthenticationOk
-    const method = dv.getInt32(off)
-    off += 4
-    if (method === constants.AuthenticationMD5Password) {
-      parser.salt = buf.slice(off, off + 4)
-      off += 4
-      parser.onMessage()
-    }
-    return off
-  }
-
-  function onErrorResponse (len, off) {
-    // E = ErrorResponse
-    errors.length = 0
-    let fieldType = u8[off++]
-    while (fieldType !== 0) {
-      const val = readCString(buf, u8, off)
-      errors.push({ type: fieldType, val })
-      off += (val.length + 1)
-      fieldType = u8[off++]
-    }
-    parser.onMessage()
-    return off
-  }
-
-  function onParameterStatus (len, off) {
-    // S = ParameterStatus
-    const key = readCString(buf, u8, off)
-    off += (key.length + 1)
-    const val = readCString(buf, u8, off)
-    off += val.length + 1
-    parameters[key] = val
-    return off
-  }
-
-  function onParameterDescription (len, off) {
-    // t = ParameterDescription
-    const nparams = dv.getInt16(off)
-    parser.params = []
-    off += 2
-    for (let i = 0; i < nparams; i++) {
-      parser.params.push(dv.getUint32(off))
-      off += 4
-    }
-    return off
-  }
-
-  function onParseComplete (len, off) {
-    // 1 = ParseComplete
-    off += len - 4
-    parser.onMessage()
-    return off
-  }
-
-  function onBindComplete (len, off) {
-    // 2 = BindComplete
-    off += len - 4
-    parser.onMessage()
-    state.rows = 0
-    state.start = off
-    state.running = true
-    return off
-  }
-
-  function onReadyForQuery (len, off) {
-    // Z = ReadyForQuery
-    parser.status = u8[off]
-    parser.onMessage()
-    off += len - 4
-    return off
-  }
-
-  function onBackendKeyData (len, off) {
-    // K = BackendKeyData
-    parser.pid = dv.getUint32(off)
-    off += 4
-    parser.key = dv.getUint32(off)
-    off += 4
-    parser.onMessage()
-    return off
-  }
-
-  function parse (bytesRead) {
-    let type
-    let len
-    let off = parseNext
-    const end = buf.offset + bytesRead
-    while (off < end) {
-      const remaining = end - off
-      let want = 5
-      // TODO: fix this
-      if (remaining < want) {
-        if (byteLength - off < 1024) {
-          if (state.running) {
-            const queryLen = off - state.start + remaining
-            just.error(`copyFrom 0 ${queryLen} ${state.start}`)
-            buf.copyFrom(buf, 0, queryLen, state.start)
-            buf.offset = queryLen
-            parseNext = off - state.start
-            state.start = 0
-            return
-          }
-          just.error(`copyFrom 1 ${remaining} ${off}`)
-          buf.copyFrom(buf, 0, remaining, off)
-          buf.offset = remaining
-          parseNext = 0
-          return
-        }
-        buf.offset = off + remaining
-        parseNext = off
-        return
-      }
-      type = parser.type = dv.getUint8(off)
-      len = parser.len = dv.getUint32(off + 1)
-      want = len + 1
-      if (remaining < want) {
-        if (byteLength - off < 1024) {
-          if (state.running) {
-            const queryLen = off - state.start + remaining
-            just.error(`copyFrom 2 ${queryLen} ${state.start} ${byteLength} ${off} ${byteLength - off}`)
-            buf.copyFrom(buf, 0, queryLen, state.start)
-            buf.offset = queryLen
-            parseNext = off - state.start
-            state.start = 0
-            return
-          }
-          just.error(`copyFrom 3 ${remaining} ${off}`)
-          buf.copyFrom(buf, 0, remaining, off)
-          buf.offset = remaining
-          parseNext = 0
-          return
-        }
-        buf.offset = off + remaining
-        parseNext = off
-        return
-      }
-      off += 5
-      off = (V[type] || V[0])(len, off)
-    }
-    parseNext = buf.offset = 0
-  }
-
-  function onDefault (len, off) {
-    off += len - 4
-    parser.onMessage()
-    return off
-  }
-
-  function free () {
-    parser.fields.length = 0
-    parser.errors.length = 0
-    parameters = parser.parameters = {}
-    nextRow = 0
-    parseNext = 0
-    state.start = state.end = state.rows = 0
-    state.running = false
-  }
-
-  const { messageTypes } = constants
-  const dv = new DataView(buf)
-  const u8 = new Uint8Array(buf)
-  const byteLength = buf.byteLength
-  const fields = []
-  const errors = []
-  const V = {
-    [messageTypes.AuthenticationOk]: onAuthenticationOk,
-    [messageTypes.ErrorResponse]: onErrorResponse,
-    [messageTypes.RowDescription]: onRowDescripton,
-    [messageTypes.CommandComplete]: onCommandComplete,
-    [messageTypes.CloseComplete]: onCloseComplete,
-    [messageTypes.ParseComplete]: onParseComplete,
-    [messageTypes.BindComplete]: onBindComplete,
-    [messageTypes.ReadyForQuery]: onReadyForQuery,
-    [messageTypes.BackendKeyData]: onBackendKeyData,
-    [messageTypes.ParameterStatus]: onParameterStatus,
-    [messageTypes.ParameterDescription]: onParameterDescription,
-    [messageTypes.DataRow]: onDataRow,
-    0: onDefault
-  }
-  const parser = {
-    buf,
-    dv,
-    u8,
-    fields,
-    parameters,
-    type: 0,
-    len: 0,
-    errors,
-    parse,
-    free,
-    state
-  }
-  return parser
-}
-
-// todo: move these to Query class
 function startupMessage (db) {
   const { user, database, version, parameters = [] } = db
   let len = 8 + 4 + 1 + user.length + 1 + 8 + 1 + database.length + 2
@@ -924,6 +601,7 @@ function md5AuthMessage ({ user, pass, salt }) {
 // todo - turn this into a PGSocket class that extends Socket from TCP
 function authenticate (sock, salt) {
   const { user, pass } = sock.config
+  // todo: check all return codes!
   sock.write(md5AuthMessage({ user, pass, salt }))
   return new Promise((resolve, reject) => {
     sock.callbacks.push(err => {
@@ -959,7 +637,7 @@ function connectSocket (config, buffer) {
           reject(new Error('Could Not Connect'))
           return
         }
-        // what to do if connection drops?
+        // what to do if connection drops? retries?
       }
       sock.onConnect = err => {
         if (err) {
@@ -968,7 +646,6 @@ function connectSocket (config, buffer) {
         }
         connected = true
         if (config.noDelay) sock.setNoDelay()
-        // if we do this and buffer the writes
         resolve(sock)
         return buffer
       }
@@ -980,14 +657,9 @@ function connectSocket (config, buffer) {
 
 async function createConnection (config) {
   if (!config.bufferSize) config.bufferSize = 64 * 1024
-  if (!config.version) config.version = PG_VERSION
+  if (!config.version) config.version = constants.PG_VERSION
   if (!config.port) config.port = 5432
   const callbacks = []
-  const stats = {}
-
-  for (const k of Object.keys(constants.messageTypes)) {
-    stats[constants.messageTypes[k]] = 0
-  }
 
   const sock = await connectSocket(config, new ArrayBuffer(config.bufferSize))
   sock.config = config
@@ -1019,13 +691,7 @@ async function createConnection (config) {
   const parser = createParser(sock.buffer)
   parser.onMessage = () => {
     const { type } = parser
-    stats[type]++
     return actions[type]()
-  }
-  parser.stats = () => {
-    const o = Object.assign({}, stats)
-    for (const k of Object.keys(stats)) stats[k] = 0
-    return o
   }
 
   sock.create = (config, size = 1) => {
@@ -1037,7 +703,27 @@ async function createConnection (config) {
     if (!query.maxRows) query.maxRows = 0
     return (new Query(sock, query, size)).setup().generate().compile().create()
   }
-  sock.onData = parser.parse
+
+  const buffer = new ArrayBuffer(64 * 1024)
+  const size = buffer.byteLength
+  let offset = 0
+  const u8 = new Uint8Array(buffer)
+
+  sock.append = (buf, len, off, flush = false) => {
+    if (offset + len > size) {
+      sock.write(buffer, offset, 0)
+      offset = 0
+    }
+    u8.set(new Uint8Array(buf, off, len), offset)
+    offset += len
+    if (flush) {
+      sock.write(buffer, offset, 0)
+      offset = 0
+    }
+  }
+
+  // todo: backpressure - pause/resume
+  sock.onData = bytes => parser.parse(bytes)
   sock.parser = parser
 
   await start(sock)
@@ -1046,9 +732,6 @@ async function createConnection (config) {
 }
 
 function connect (config, poolSize = 1) {
-  if (poolSize === 1) {
-    return Promise.all([createConnection(config)])
-  }
   const connections = []
   for (let i = 0; i < poolSize; i++) {
     connections.push(createConnection(config))
@@ -1058,7 +741,7 @@ function connect (config, poolSize = 1) {
 
 /**
  * Generate a Bulk Update SQL statement definition which can be passed to
- * sock.create. For a given table, identity column and column to be updated, it 
+ * sock.create. For a given table, identity column and column to be updated, it
  * will generate a single SQL statement to update all fields in one statement
  *
  * @param {string} table   - The name of the table
@@ -1091,4 +774,4 @@ function generateBulkUpdate (table, field, id, updates = 5, type = constants.Bin
   return { formats, name: `${updates}`, params: updates * 2, sql: sql.join('\n') }
 }
 
-module.exports = { constants, connect, generateBulkUpdate }
+module.exports = { constants, connect, generateBulkUpdate, createParser }
