@@ -22,12 +22,9 @@ const constants = {
     ParameterDescription: 116,
     DataRow: 68,
     NoData: 110
-  }
+  },
+  PG_VERSION: 0x00030000
 }
-
-constants.PG_VERSION = 0x00030000
-
-const { INT4OID, VARCHAROID } = constants.fieldTypes
 
 const messageNames = {}
 Object.keys(constants.messageTypes).forEach(k => {
@@ -37,12 +34,12 @@ constants.messageNames = messageNames
 
 constants.BinaryInt = {
   format: constants.formats.Binary,
-  oid: INT4OID
+  oid: constants.fieldTypes.INT4OID
 }
 
 constants.VarChar = {
   format: constants.formats.Text,
-  oid: VARCHAROID
+  oid: constants.fieldTypes.VARCHAROID
 }
 
 function readCString (u8, off) {
