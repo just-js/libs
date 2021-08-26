@@ -19,9 +19,10 @@ const {
   ReadyForQuery,
   CloseComplete,
   BackendKeyData,
-  BindComplete
+  BindComplete,
+  NotificationResponse
 } = constants.messageTypes
-const { messageFields } = constants
+const { messageNames, messageFields } = constants
 
 class Messaging {
   constructor (buffer, config) {
@@ -723,6 +724,9 @@ async function createConnection (config) {
 
   actions[NoticeResponse] = () => {
     if (sock.onNotice) sock.onNotice(sock.parser.notice)
+  }
+  actions[NotificationResponse] = () => {
+    if (sock.onNotify) sock.onNotify(sock.parser.notification)
   }
   actions[BackendKeyData] = () => {}
   actions[ParseComplete] = () => {}

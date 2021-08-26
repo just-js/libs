@@ -22,7 +22,8 @@ const constants = {
     ParameterDescription: 116,
     DataRow: 68,
     NoData: 110,
-    NoticeResponse: 78
+    NoticeResponse: 78,
+    NotificationResponse: 65
   },
   messageFields: {
     83: 'severity',

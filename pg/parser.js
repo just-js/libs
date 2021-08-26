@@ -38,6 +38,20 @@ class Parser {
         }
         return off
       },
+      [messageTypes.NotificationResponse]: (len, off) => {
+        // A = NotificationResponse
+        const notification = {}
+        notification.pid = dv.getUint32(off)
+        off += 4
+        notification.channel = readCString(u8, off)
+        off += notification.channel.length + 1
+        notification.message = readCString(u8, off)
+        off += notification.message.length + 1
+        parser.notification = notification
+        parser.onMessage()
+        parser.notification = {}
+        return off
+      },
       [messageTypes.NoticeResponse]: (len, off) => {
         // N = NoticeResponse
         const notice = {}
