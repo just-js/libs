@@ -21,9 +21,10 @@ const constants = {
     ParameterStatus: 83,
     ParameterDescription: 116,
     DataRow: 68,
-    NoData: 110
+    NoData: 110,
+    NoticeResponse: 78
   },
-  errorFields: {
+  messageFields: {
     83: 'severity',
     67: 'sqlstate',
     77: 'message',

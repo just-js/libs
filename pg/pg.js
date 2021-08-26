@@ -11,6 +11,7 @@ const { INT4OID, VARCHAROID } = constants.fieldTypes
 const {
   AuthenticationOk,
   ErrorResponse,
+  NoticeResponse,
   RowDescription,
   CommandComplete,
   ParseComplete,
@@ -20,7 +21,7 @@ const {
   BackendKeyData,
   BindComplete
 } = constants.messageTypes
-const { errorFields } = constants
+const { messageFields } = constants
 
 class Messaging {
   constructor (buffer, config) {
@@ -41,7 +42,7 @@ class Messaging {
 
   createPrepareMessage (off = this.off) {
     const { view, buffer, formats, name, sql } = this
-    const len = 9 + sql.length + name.length + (formats.length * 4)
+    const len = 9 + String.byteLength(sql) + name.length + (formats.length * 4)
     view.setUint8(off++, 80) // 'P'
     view.setUint32(off, len - 1)
     off += 4
@@ -190,7 +191,7 @@ class Query {
     bindings.length = 0
     // todo: we should be able to calculate the exact required size
     const flushLen = 5
-    const prepareLen = 9 + query.sql.length + query.name.length + (query.formats.length * 4)
+    const prepareLen = 9 + String.byteLength(query.sql) + query.name.length + (query.formats.length * 4)
     const describeLen = 7 + query.name.length
     const bindLen = 1 + 4 + query.portal.length + 1 + query.name.length + 1 + (query.formats.length * 2) + 2 + (query.params.length * 8) + 2 + (query.fields.length * 2) + 2
     // todo: we need to know size of variable length params
@@ -676,7 +677,7 @@ class PGError extends Error {
   constructor (errors) {
     const err = {}
     errors.forEach(e => {
-      const name = errorFields[e.type]
+      const name = messageFields[e.type]
       if (!name) return
       err[name] = e.val
     })
@@ -720,6 +721,9 @@ async function createConnection (config) {
 
   const actions = {}
 
+  actions[NoticeResponse] = () => {
+    if (sock.onNotice) sock.onNotice(sock.parser.notice)
+  }
   actions[BackendKeyData] = () => {}
   actions[ParseComplete] = () => {}
   actions[BindComplete] = () => {}

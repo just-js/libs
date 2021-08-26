@@ -1,4 +1,5 @@
 const { readCString, constants } = require('common.js')
+const { messageFields } = constants
 
 class Parser {
   constructor (buffer) {
@@ -15,6 +16,8 @@ class Parser {
     this.type = 0
     this.len = 0
     const errors = []
+    const notice = {}
+    this.notice = notice
     this.errors = errors
     const state = { start: 0, end: 0, rows: 0, running: false }
     this.state = state
@@ -35,6 +38,21 @@ class Parser {
         }
         return off
       },
+      [messageTypes.NoticeResponse]: (len, off) => {
+        // N = NoticeResponse
+        const notice = {}
+        let fieldType = u8[off++]
+        while (fieldType !== 0) {
+          const val = readCString(u8, off)
+          notice[messageFields[fieldType]] = val
+          off += (val.length + 1)
+          fieldType = u8[off++]
+        }
+        parser.notice = notice
+        parser.onMessage()
+        parser.notice = {}
+        return off
+      },
       [messageTypes.ErrorResponse]: (len, off) => {
         // E = ErrorResponse
         errors.length = 0
@@ -45,6 +63,7 @@ class Parser {
           off += (val.length + 1)
           fieldType = u8[off++]
         }
+        just.print(JSON.stringify(errors))
         parser.onMessage()
         return off
       },
