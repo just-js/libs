@@ -20,6 +20,7 @@ const {
   BackendKeyData,
   BindComplete
 } = constants.messageTypes
+const { errorFields } = constants
 
 class Messaging {
   constructor (buffer, config) {
@@ -183,6 +184,7 @@ class Query {
     this.last = null
   }
 
+  // TODO: add some logic for default portal to automatically prepare statement being executed on the default portal if it is not same as current prepared query
   setup () {
     const { size, query, bindings } = this
     bindings.length = 0
@@ -232,9 +234,23 @@ class Query {
   // prepare the sql statement on the server
   create () {
     const batch = this
-    const { sock, prepare } = this
+    const { query, sock, prepare } = this
     return new Promise((resolve, reject) => {
-      sock.push(() => resolve(batch))
+      sock.push(() => {
+        // todo: put some logic in here to use binary format wherever we can even if server tells us the format is text
+        const { errors, fields } = sock.parser
+        if (query.fields.length < sock.parser.fields.length) {
+          query.fields = fields.map(field => {
+            const { name, format, oid } = field
+            return { name, format: { format, oid } }
+          })
+        }
+        if (errors.length) {
+          reject(createError(errors))
+          return
+        }
+        resolve(batch)
+      })
       const r = sock.write(prepare.buffer, prepare.off, 0)
       if (r <= 0) reject(new just.SystemError('Could Not Prepare Queries'))
       // todo: eagain
@@ -340,8 +356,6 @@ class Query {
       source.push('for (let args of batchArgs) {')
       source.push('  const binding = bindings[next + first]')
       source.push('  const { paramStart, start, len } = binding')
-//      source.push('  view.setUint8(start, 66)')
-//      source.push('  view.setUint32(start + 1, len - 1)')
       source.push('  let off = paramStart')
       for (let i = 0; i < params.length; i++) {
         if ((formats[i] || formats[0]).oid === INT4OID) {
@@ -395,8 +409,6 @@ class Query {
       source.push('const { params } = query')
       source.push('const { view, buffer } = exec')
       source.push('let off = binding.paramStart')
-      //source.push('view.setUint8(binding.start, 66)')
-      //source.push('view.setUint32(binding.start + 1, binding.len - 1)')
       for (let i = 0; i < params.length; i++) {
         if ((formats[i] || formats[0]).oid === INT4OID) {
           if ((formats[i] || formats[0]).format === constants.formats.Binary) {
@@ -447,10 +459,29 @@ class Query {
   }
 
   onSingle (callback) {
+    const { parser } = this.sock
     this.pending--
     if (this.syncing > 0 && this.syncing >= this.pending) this.commit()
-    if (this.sock.parser.state.rows === 0) return callback()
-    callback(this.read())
+    if (parser.errors.length) {
+      callback(createError(parser.errors))
+      parser.errors.length = 0
+      return
+    }
+    if (parser.state.rows === 0) return callback()
+    callback(null, this.read())
+  }
+
+  onSingleAsync (resolve, reject) {
+    const { parser } = this.sock
+    this.pending--
+    if (this.syncing > 0 && this.syncing >= this.pending) this.commit()
+    if (parser.errors.length) {
+      reject(createError(parser.errors))
+      parser.errors.length = 0
+      return
+    }
+    if (parser.state.rows === 0) return resolve()
+    resolve(this.read())
   }
 
   runSingle (resolve) {
@@ -463,8 +494,8 @@ class Query {
       sock.push(() => this.onSingle(resolve))
       return
     }
-    return new Promise(resolve => {
-      sock.push(() => this.onSingle(resolve))
+    return new Promise((resolve, reject) => {
+      sock.push(() => this.onSingleAsync(resolve, reject))
     })
   }
 
@@ -478,8 +509,8 @@ class Query {
       sock.push(() => this.onSingle(resolve))
       return
     }
-    return new Promise(resolve => {
-      sock.push(() => this.onSingle(resolve))
+    return new Promise((resolve, reject) => {
+      sock.push(() => this.onSingleAsync(resolve, reject))
     })
   }
 
@@ -515,6 +546,7 @@ class Query {
     this.pending += len
     const results = []
     let done = 0
+    // todo; handle errors
     if (resolve) {
       args.forEach(() => sock.push(() => {
         done = this.onBatch(resolve, results, len, done)
@@ -640,8 +672,22 @@ function connectSocket (config, buffer) {
   })
 }
 
+class PGError extends Error {
+  constructor (errors) {
+    const err = {}
+    errors.forEach(e => {
+      const name = errorFields[e.type]
+      if (!name) return
+      err[name] = e.val
+    })
+    super(err.message)
+    Object.assign(this, err)
+    this.name = 'PGError'
+  }
+}
+
 function createError (errors) {
-  return new Error(JSON.stringify(errors, null, '  '))
+  return new PGError(errors)
 }
 
 async function createConnection (config) {
@@ -680,7 +726,7 @@ async function createConnection (config) {
   actions[CloseComplete] = () => sock.shift()()
   actions[AuthenticationOk] = () => sock.shift()()
   actions[NoData] = () => sock.shift()()
-  actions[ErrorResponse] = () => sock.shift()(createError(parser.errors))
+  actions[ErrorResponse] = () => sock.shift()()
   actions[CommandComplete] = () => sock.shift()()
   actions[RowDescription] = () => sock.shift()()
   actions[ReadyForQuery] = () => {
@@ -695,14 +741,16 @@ async function createConnection (config) {
   const parser = createParser(sock.buffer)
   parser.onMessage = () => actions[parser.type]()
 
-  sock.compile = (config, batchSize = 1) => {
+  sock.compile = async (config, batchSize = 1) => {
     const query = Object.assign({}, config)
     if (!query.portal) query.portal = ''
     query.params = Array(config.params || 0).fill(0)
     if (!query.fields) query.fields = []
     if (!query.formats) query.formats = []
     if (!query.maxRows) query.maxRows = 0
-    return (new Query(sock, query, batchSize)).setup().generate().compile().create()
+    const batch = new Query(sock, query, batchSize)
+    await batch.setup().create()
+    return batch.generate().compile()
   }
   sock.onData = bytes => parser.parse(bytes)
   sock.parser = parser

@@ -23,6 +23,24 @@ const constants = {
     DataRow: 68,
     NoData: 110
   },
+  errorFields: {
+    83: 'severity',
+    67: 'sqlstate',
+    77: 'message',
+    68: 'detail',
+    72: 'hint',
+    80: 'position',
+    113: 'internalquery',
+    87: 'where',
+    115: 'schema',
+    116: 'table',
+    99: 'column',
+    100: 'datatype',
+    110: 'constraint',
+    70: 'filename',
+    76: 'line',
+    82: 'routine'
+  },
   PG_VERSION: 0x00030000
 }
 
