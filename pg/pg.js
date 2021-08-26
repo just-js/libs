@@ -40,8 +40,6 @@ class Messaging {
 
   createPrepareMessage (off = this.off) {
     const { view, buffer, formats, name, sql } = this
-    const offsets = { start: 0, end: 0 }
-    offsets.start = off
     const len = 9 + sql.length + name.length + (formats.length * 4)
     view.setUint8(off++, 80) // 'P'
     view.setUint32(off, len - 1)
@@ -56,14 +54,11 @@ class Messaging {
       view.setUint32(off, formats[i].format.oid)
       off += 4
     }
-    offsets.len = off - offsets.start
-    return { off, offsets, len }
+    return { off, len }
   }
 
   createDescribeMessage (off = this.off) {
     const { view, buffer, name } = this
-    const offsets = { start: 0, end: 0 }
-    offsets.start = off
     const len = 7 + name.length
     view.setUint8(off++, 68) // 'D'
     view.setUint32(off, len - 1)
@@ -71,36 +66,27 @@ class Messaging {
     view.setUint8(off++, 83) // 'S'
     off += buffer.writeString(name, off)
     view.setUint8(off++, 0)
-    offsets.len = off - offsets.start
-    return { offsets, off, len }
+    return { off, len }
   }
 
   createFlushMessage (off = this.off) {
     const { view } = this
-    const offsets = { start: 0, end: 0 }
-    offsets.start = off
     view.setUint8(off++, 72) // 'H'
     view.setUint32(off, 4)
     off += 4
-    offsets.len = off - offsets.start
-    return { off, offsets }
+    return { off }
   }
 
   createSyncMessage (off = this.off) {
     const { view } = this
-    const offsets = { start: 0, end: 0 }
-    offsets.start = off
     view.setUint8(off++, 83) // 'S'
     view.setUint32(off, 4)
     off += 4
-    offsets.len = off - offsets.start
-    return { off, offsets }
+    return { off }
   }
 
   createExecMessage (off = this.off) {
     const { view, buffer, portal, maxRows } = this
-    const offsets = { start: 0, end: 0 }
-    offsets.start = off
     const len = 6 + portal.length + 4
     view.setUint8(off++, 69) // 'E'
     view.setUint32(off, len - 1)
@@ -111,14 +97,12 @@ class Messaging {
     view.setUint8(off++, 0)
     view.setUint32(off, maxRows)
     off += 4
-    offsets.len = off - offsets.start
-    return { len, off, offsets }
+    return { len, off }
   }
 
   createBindMessage (off = this.off) {
     const { view, buffer, formats, portal, name, params, fields } = this
-    const offsets = { start: 0, end: 0 }
-    offsets.start = off
+    const start = off
     view.setUint8(off++, 66) // 'B'
     off += 4 // length - will be filled in later
     if (portal.length) {
@@ -178,9 +162,8 @@ class Messaging {
       view.setUint16(off, 0)
       off += 2
     }
-    offsets.len = off - offsets.start
-    view.setUint32(offsets.start + 1, offsets.len - 1)
-    return { off, offsets, paramStart }
+    view.setUint32(start + 1, (off - start) - 1)
+    return { off, paramStart, len: off - start, start }
   }
 }
 
@@ -220,7 +203,7 @@ class Query {
       e.off = bind.off
       const exec = e.createExecMessage()
       e.off = exec.off
-      bind.eoff = exec.off
+      bind.size = exec.off
     }
     this.last = bindings[size - 1]
     e.off = e.createSyncMessage().off
@@ -251,8 +234,7 @@ class Query {
     const batch = this
     const { sock, prepare } = this
     return new Promise((resolve, reject) => {
-      sock.callbacks.push(() => {})
-      sock.callbacks.push(() => resolve(batch))
+      sock.push(() => resolve(batch))
       const r = sock.write(prepare.buffer, prepare.off, 0)
       if (r <= 0) reject(new just.SystemError('Could Not Prepare Queries'))
       // todo: eagain
@@ -265,7 +247,7 @@ class Query {
     // todo. needs to be compiled in a separate context
     if (read.length) this.read = just.vm.compile(read, `${query.name}r.js`, [], [])
     if (writeBatch.length) this.writeBatch = just.vm.compile(writeBatch, `${query.name}w.js`, ['batchArgs', 'first'], [])
-    if (writeSingle.length) this.writeSingle = just.vm.compile(writeSingle, `${query.name}s.js`, ['off'], [])
+    if (writeSingle.length) this.writeSingle = just.vm.compile(writeSingle, `${query.name}s.js`, ['binding'], [])
     return this
   }
 
@@ -348,7 +330,7 @@ class Query {
     source.push('    off += 7')
     source.push('  }')
     source.push('  return result')
-    const read = source.join('\n')
+    const read = source.join('\n').trim()
 
     source.length = 0
     if (params.length) {
@@ -356,7 +338,10 @@ class Query {
       source.push('const { view, buffer } = exec')
       source.push('let next = 0')
       source.push('for (let args of batchArgs) {')
-      source.push('  const { paramStart } = bindings[next + first]')
+      source.push('  const binding = bindings[next + first]')
+      source.push('  const { paramStart, start, len } = binding')
+//      source.push('  view.setUint8(start, 66)')
+//      source.push('  view.setUint32(start + 1, len - 1)')
       source.push('  let off = paramStart')
       for (let i = 0; i < params.length; i++) {
         if ((formats[i] || formats[0]).oid === INT4OID) {
@@ -402,13 +387,16 @@ class Query {
       source.push('  next++')
       source.push('}')
     }
-    const writeBatch = source.join('\n')
+    const writeBatch = source.join('\n').trim()
 
     source.length = 0
     if (params.length) {
       source.push('const { exec, query } = this')
       source.push('const { params } = query')
       source.push('const { view, buffer } = exec')
+      source.push('let off = binding.paramStart')
+      //source.push('view.setUint8(binding.start, 66)')
+      //source.push('view.setUint32(binding.start + 1, binding.len - 1)')
       for (let i = 0; i < params.length; i++) {
         if ((formats[i] || formats[0]).oid === INT4OID) {
           if ((formats[i] || formats[0]).format === constants.formats.Binary) {
@@ -435,109 +423,108 @@ class Query {
         }
       }
     }
-    const writeSingle = source.join('\n')
+    const writeSingle = source.join('\n').trim()
     this.source = { read, writeBatch, writeSingle }
     return this
   }
 
   write (args, first) {}
   writeSingle (off) {}
-
-  // read the current rows from the buffers - to be overridden
   read () {
     return []
   }
 
-  runBatch (args = [[]]) {
-    const batch = this
-    const { sock, size, bindings, sync, exec } = this
-    const { callbacks } = sock
-    const { buffer } = exec
-    const n = args.length
-    const first = size - n
-    batch.writeBatch(args, first)
-    const start = bindings[first].offsets.start
-    if (this.syncing >= this.pending) {
-      sock.append(buffer, exec.off - start, start, true)
-      this.syncing = 0
-    } else {
-      sock.append(buffer, exec.off - 5 - start, start, false)
-      this.syncing++
-    }
+  commit () {
+    const binding = this.bindings[this.syncing - 1]
+    const { sock, exec } = this
+    const { size } = binding
+    exec.view.setUint8(size, 83)
+    exec.view.setUint32(size + 1, 4)
+    sock.write(exec.buffer, size + 5, 0)
+    exec.view.setUint8(size, 66)
+    exec.view.setUint32(size + 1, binding.len - 1)
+    this.syncing = 0
+  }
+
+  onSingle (callback) {
+    this.pending--
+    if (this.syncing > 0 && this.syncing >= this.pending) this.commit()
+    if (this.sock.parser.state.rows === 0) return callback()
+    callback(this.read())
+  }
+
+  runSingle (resolve) {
+    const { sock } = this
+    this.writeSingle(this.bindings[this.syncing])
+    this.syncing++
+    if (this.pending === 0) this.commit()
     this.pending++
-    const results = []
-    let done = 0
-    return new Promise((resolve, reject) => {
-      args.forEach(args => callbacks.push((err, rows) => {
-        // todo: what about the rest of the inflight callbacks?
-        if (err) {
-          reject(err)
-          return
-        }
-        // read the results from this query
-        if (rows === 0) {
-          resolve()
-          return
-        }
-        if (n === 1) {
-          batch.pending--
-          if (batch.syncing > 0 && batch.syncing >= batch.pending) {
-            sock.append(sync.buffer, sync.off, 0, true)
-            batch.syncing = 0
-          }
-          resolve([batch.read()])
-          return
-        }
-        results.push(batch.read())
-        if (++done === n) {
-          batch.pending--
-          if (batch.syncing > 0 && batch.syncing >= batch.pending) {
-            sock.append(sync.buffer, sync.off, 0, true)
-            batch.syncing = 0
-          }
-          resolve(results)
-        }
-      }))
+    if (resolve) {
+      sock.push(() => this.onSingle(resolve))
+      return
+    }
+    return new Promise(resolve => {
+      sock.push(() => this.onSingle(resolve))
     })
   }
 
-  runSingle (commit = false) {
-    const batch = this
-    const { sock, exec, sync } = batch
-    const binding = batch.bindings[batch.syncing]
-    const first = batch.bindings[0]
-    const { callbacks } = sock
-    const { buffer } = exec
-    const { paramStart } = binding
-    batch.writeSingle(paramStart)
-    const start = first.offsets.start
-    if (commit || this.syncing >= this.pending || this.syncing === 64) {
-      sock.append(buffer, binding.eoff - start, start, false)
-      sock.append(sync.buffer, sync.off, 0, true)
-      this.syncing = 0
-    } else {
-      this.syncing++
-    }
+  runSingleCommit (resolve) {
+    const { sock } = this
+    this.writeSingle(this.bindings[this.syncing])
+    this.syncing++
+    this.commit()
     this.pending++
-    return new Promise((resolve, reject) => {
-      callbacks.push((err, rows) => {
-        batch.pending--
-        if (batch.syncing > 0 && batch.syncing >= batch.pending) {
-          const binding = batch.bindings[batch.syncing - 1]
-          sock.append(buffer, binding.eoff - start, start, false)
-          sock.append(sync.buffer, sync.off, 0, true)
-          batch.syncing = 0
-        }
-        if (err) {
-          reject(err)
-          return
-        }
-        if (rows === 0) {
-          resolve()
-          return
-        }
-        resolve(batch.read())
-      })
+    if (resolve) {
+      sock.push(() => this.onSingle(resolve))
+      return
+    }
+    return new Promise(resolve => {
+      sock.push(() => this.onSingle(resolve))
+    })
+  }
+
+  onBatch (callback, results, len, done) {
+    this.pending--
+    if (len === 1) {
+      if (this.syncing > 0 && this.syncing >= this.pending) {
+        this.commit()
+      }
+      if (this.sock.parser.state.rows === 0) {
+        callback()
+        return done
+      }
+      callback(this.read())
+      return done
+    }
+    results.push(this.read())
+    if (++done === len) {
+      if (this.syncing > 0 && this.syncing >= this.pending) {
+        this.commit()
+      }
+      callback(results)
+    }
+    return done
+  }
+
+  runBatch (args = [[]], resolve) {
+    const { sock } = this
+    this.writeBatch(args, this.syncing)
+    const len = args.length
+    this.syncing += len
+    if (this.pending === 0) this.commit()
+    this.pending += len
+    const results = []
+    let done = 0
+    if (resolve) {
+      args.forEach(() => sock.push(() => {
+        done = this.onBatch(resolve, results, len, done)
+      }))
+      return
+    }
+    return new Promise(resolve => {
+      args.forEach(() => sock.push(() => {
+        done = this.onBatch(resolve, results, len, done)
+      }))
     })
   }
 }
@@ -599,24 +586,22 @@ function md5AuthMessage ({ user, pass, salt }) {
 
 // ACTIONS - Async/Promise Interface
 // todo - turn this into a PGSocket class that extends Socket from TCP
-function authenticate (sock, salt) {
-  const { user, pass } = sock.config
-  // todo: check all return codes!
+function authenticate (sock, user, pass, salt) {
   sock.write(md5AuthMessage({ user, pass, salt }))
   return new Promise((resolve, reject) => {
-    sock.callbacks.push(err => {
+    sock.push(err => {
       if (err) return reject(err)
       resolve()
     })
   })
 }
 
-function start (sock) {
-  sock.write(startupMessage(sock.config))
+function start (sock, db, parser) {
+  sock.write(startupMessage(db))
   return new Promise((resolve, reject) => {
-    sock.callbacks.push(err => {
+    sock.push(err => {
       if (err) return reject(err)
-      resolve()
+      resolve(parser.salt)
     })
   })
 }
@@ -655,79 +640,74 @@ function connectSocket (config, buffer) {
   })
 }
 
+function createError (errors) {
+  return new Error(JSON.stringify(errors, null, '  '))
+}
+
 async function createConnection (config) {
   if (!config.bufferSize) config.bufferSize = 64 * 1024
   if (!config.version) config.version = constants.PG_VERSION
   if (!config.port) config.port = 5432
-  const callbacks = []
+  const { user, pass, bufferSize } = config
 
-  const sock = await connectSocket(config, new ArrayBuffer(config.bufferSize))
-  sock.config = config
-  sock.callbacks = callbacks
+  const sock = await connectSocket(config, new ArrayBuffer(bufferSize))
   sock.authenticated = false
+  sock.config = config
 
-  const defaultAction = (...args) => callbacks.shift()(...args)
-  const defaults = [CloseComplete, AuthenticationOk, ParseComplete, NoData]
+  const size = 4096
+  let head = 0
+  let tail = 0
+  const callbacks = new Array(size)
+  sock.queueSize = () => {
+    if (tail < head) return size - head + tail
+    return tail - head
+  }
+  sock.push = callback => {
+    callbacks[tail] = callback
+    tail = (tail + 1) % size
+  }
+  sock.shift = () => {
+    const callback = callbacks[head]
+    head = (head + 1) % size
+    return callback
+  }
+
   const actions = {}
-  defaults.forEach(type => {
-    actions[type] = defaultAction
-  })
+
   actions[BackendKeyData] = () => {}
+  actions[ParseComplete] = () => {}
   actions[BindComplete] = () => {}
+  actions[CloseComplete] = () => sock.shift()()
+  actions[AuthenticationOk] = () => sock.shift()()
+  actions[NoData] = () => sock.shift()()
+  actions[ErrorResponse] = () => sock.shift()(createError(parser.errors))
+  actions[CommandComplete] = () => sock.shift()()
+  actions[RowDescription] = () => sock.shift()()
   actions[ReadyForQuery] = () => {
-    if (sock.authenticated) return
+    if (sock.authenticated) {
+      actions[ReadyForQuery] = () => {}
+      return
+    }
     sock.authenticated = true
-    defaultAction()
-  }
-  actions[ErrorResponse] = () => {
-    defaultAction(new Error(JSON.stringify(parser.errors, null, '  ')))
-  }
-  actions[CommandComplete] = () => defaultAction(null, parser.state.rows)
-  actions[RowDescription] = () => {
-    if (sock.callbacks[0].isExec) return
-    defaultAction()
+    sock.shift()()
   }
 
   const parser = createParser(sock.buffer)
-  parser.onMessage = () => {
-    const { type } = parser
-    return actions[type]()
-  }
+  parser.onMessage = () => actions[parser.type]()
 
-  sock.create = (config, size = 1) => {
+  sock.compile = (config, batchSize = 1) => {
     const query = Object.assign({}, config)
     if (!query.portal) query.portal = ''
     query.params = Array(config.params || 0).fill(0)
     if (!query.fields) query.fields = []
     if (!query.formats) query.formats = []
     if (!query.maxRows) query.maxRows = 0
-    return (new Query(sock, query, size)).setup().generate().compile().create()
+    return (new Query(sock, query, batchSize)).setup().generate().compile().create()
   }
-
-  const buffer = new ArrayBuffer(64 * 1024)
-  const size = buffer.byteLength
-  let offset = 0
-  const u8 = new Uint8Array(buffer)
-
-  sock.append = (buf, len, off, flush = false) => {
-    if (offset + len > size) {
-      sock.write(buffer, offset, 0)
-      offset = 0
-    }
-    u8.set(new Uint8Array(buf, off, len), offset)
-    offset += len
-    if (flush) {
-      sock.write(buffer, offset, 0)
-      offset = 0
-    }
-  }
-
-  // todo: backpressure - pause/resume
   sock.onData = bytes => parser.parse(bytes)
   sock.parser = parser
-
-  await start(sock)
-  await authenticate(sock, parser.salt)
+  const salt = await start(sock, config, parser)
+  await authenticate(sock, user, pass, salt)
   return sock
 }
 
