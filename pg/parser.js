@@ -228,6 +228,10 @@ class Parser {
     this.parseNext = buf.offset = 0
   }
 
+  readStatus () {
+    return readCString(this.u8, this.state.start + 5)
+  }
+
   free () {
     const { state, fields, errors } = this
     fields.length = 0
