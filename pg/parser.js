@@ -77,7 +77,6 @@ class Parser {
           off += (val.length + 1)
           fieldType = u8[off++]
         }
-        just.print(JSON.stringify(errors))
         parser.onMessage()
         return off
       },
