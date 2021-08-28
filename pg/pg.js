@@ -241,7 +241,7 @@ class Query {
       sock.push(() => {
         // todo: put some logic in here to use binary format wherever we can even if server tells us the format is text
         const { errors, fields } = sock.parser
-        if (query.fields.length < sock.parser.fields.length) {
+        if (query.fields.length < fields.length) {
           query.fields = fields.map(field => {
             const { name, format, oid } = field
             return { name, format: { format, oid } }
