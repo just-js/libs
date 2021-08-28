@@ -308,7 +308,7 @@ class Query {
         source.push('    off += len')
       }
     }
-    source.push(`    return [{ ${fields.map(f => f.name).join(', ')} }]`)
+    source.push(`    return { ${fields.map(f => f.name).join(', ')} }`)
     source.push('  }')
     source.push('  const result = []')
     source.push('  off = start + 7')
@@ -519,14 +519,17 @@ class Query {
   onBatch (callback, results, len, done) {
     this.pending--
     if (len === 1) {
-      if (this.syncing > 0 && this.syncing >= this.pending) {
-        this.commit()
+      if (this.syncing > 0 && this.syncing >= this.pending) this.commit()
+      if (parser.errors.length) {
+        callback(createError(parser.errors))
+        parser.errors.length = 0
+        return
       }
       if (this.sock.parser.state.rows === 0) {
-        callback()
+        callback(null, [])
         return done
       }
-      callback(this.read())
+      callback(null, [this.read()])
       return done
     }
     results.push(this.read())
@@ -534,7 +537,50 @@ class Query {
       if (this.syncing > 0 && this.syncing >= this.pending) {
         this.commit()
       }
-      callback(results)
+      if (parser.errors.length) {
+        callback(createError(parser.errors))
+        parser.errors.length = 0
+        return
+      }
+      if (this.sock.parser.state.rows === 0) {
+        callback(null, [])
+        return done
+      }
+      callback(null, results)
+    }
+    return done
+  }
+
+  onBatchAsync (resolve, reject, results, len, done) {
+    const { parser } = this.sock
+    this.pending--
+    if (len === 1) {
+      if (this.syncing > 0 && this.syncing >= this.pending) this.commit()
+      if (parser.errors.length) {
+        reject(createError(parser.errors))
+        parser.errors.length = 0
+        return
+      }
+      if (parser.state.rows === 0) {
+        resolve([])
+        return done
+      }
+      resolve([this.read()])
+      return done
+    }
+    results.push(this.read())
+    if (++done === len) {
+      if (this.syncing > 0 && this.syncing >= this.pending) this.commit()
+      if (parser.errors.length) {
+        reject(createError(parser.errors))
+        parser.errors.length = 0
+        return
+      }
+      if (parser.state.rows === 0) {
+        resolve([])
+        return done
+      }
+      resolve(results)
     }
     return done
   }
@@ -555,9 +601,9 @@ class Query {
       }))
       return
     }
-    return new Promise(resolve => {
+    return new Promise((resolve, reject) => {
       args.forEach(() => sock.push(() => {
-        done = this.onBatch(resolve, results, len, done)
+        done = this.onBatchAsync(resolve, reject, results, len, done)
       }))
     })
   }
