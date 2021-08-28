@@ -308,7 +308,7 @@ class Query {
         source.push('    off += len')
       }
     }
-    source.push(`    return { ${fields.map(f => f.name).join(', ')} }`)
+    source.push(`    return [{ ${fields.map(f => f.name).join(', ')} }]`)
     source.push('  }')
     source.push('  const result = []')
     source.push('  off = start + 7')
