@@ -110,8 +110,8 @@ function Parser () {
     offset = 0
     let frame
     if (ethernet) {
-      const source = new Uint8Array(buf, offset, 6)
-      const dest = new Uint8Array(buf, offset + 6, 6)
+      const dest = new Uint8Array(buf, offset, 6)
+      const source = new Uint8Array(buf, offset + 6, 6)
       const type = dv.getUint16(offset + 12)
       frame = { source, dest, type }
       if (type <= 1500) {

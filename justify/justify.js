@@ -58,6 +58,10 @@ class Response {
     this.onFinish = onFinish
   }
 
+  write (str) {
+    sendString(this.fd, str)
+  }
+
   setHeader (...args) {
     // todo: sanitize
     this.headers.push(args)
@@ -128,9 +132,12 @@ class Response {
 
   finish () {
     if (this.pipeline && this.queue.length) {
-      // todo: check return codes - backpressure
       sendString(this.fd, this.queue)
+      // todo: check return codes - backpressure
+      //const written = sendString(this.fd, this.queue)
+      //just.print(`length ${this.queue.length} written ${written}`)
       this.queue = ''
+      this.pipeline = false
     }
   }
 }
