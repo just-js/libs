@@ -94,11 +94,37 @@ function lookup (query = 'www.google.com', onRecord = () => {}, address = dnsSer
       onRecord(new Error(`Address Not Found for ${query}`))
       return
     }
-    const { ip } = message.answer[0]
-    const result = `${ip[0]}.${ip[1]}.${ip[2]}.${ip[3]}`
+    if (message.answer.length === 0 && message.answer[0].ctype === 1) {
+      const { ip } = message.answer[0]
+      const result = `${ip[0]}.${ip[1]}.${ip[2]}.${ip[3]}`
+      loop.remove(fd)
+      net.close(fd)
+      onRecord(null, result)
+      return
+    }
+    const dict = {}
+    message.answer.forEach(answer => {
+      const { ip, cname, qtype } = answer
+      const name = answer.name.join('.')
+      if (qtype === 5) {
+        dict[name] = { cname: cname.join('.') }
+      } else if (qtype === 1) {
+        dict[name] = { ip: `${ip[0]}.${ip[1]}.${ip[2]}.${ip[3]}` }
+      }
+    })
+    let ip
+    let q = query
+    while (!ip) {
+      const res = dict[q]
+      if (res.ip) {
+        ip = res.ip
+        break
+      }
+      q = res.cname
+    }
     loop.remove(fd)
     net.close(fd)
-    onRecord(null, result)
+    onRecord(null, ip)
   })
   const len = create(query, buf, 1)
   const rc = udp.sendmsg(fd, buf, address, port, len)
