@@ -150,19 +150,19 @@ class Socket {
 
   pull () {
     const socket = this
-    return new Promise((resolve, reject) => {
-      function next () {
-        socket.onReadable = () => {
-          socket.onReadable = () => {}
-          const bytes = socket.read()
-          if (bytes >= 0) {
-            resolve(bytes)
-            return
-          }
-          next()
+    if (socket.paused) socket.resume()
+    return new Promise(resolve => {
+      socket.onReadable = () => {
+        const bytes = socket.read()
+        if (bytes >= 0) {
+          resolve(bytes)
+          return
+        }
+        if (this.closed) {
+          resolve(-1)
+          return
         }
       }
-      next()
     })
   }
 
@@ -171,6 +171,7 @@ class Socket {
     const { offset, byteLength } = this.buffer
     const expected = byteLength - offset 
     const bytes = tls.read(this.buffer, expected, offset)
+    if (bytes > 0) return bytes
     if (bytes === 0) {
       const err = tls.error(this.buffer, bytes)
       if (err === tls.SSL_ERROR_ZERO_RETURN) {
@@ -181,18 +182,16 @@ class Socket {
       this.close()
       return bytes
     }
-    if (bytes < 0) {
-      const err = tls.error(this.buffer, bytes)
-      if (err === tls.SSL_ERROR_WANT_READ) {
-        const errno = sys.errno()
-        if (errno !== EAGAIN) {
-          just.print(`tls read error: ${sys.errno()}: ${sys.strerror(sys.errno())}`)
-          this.close()
-        }
-      } else {
-        just.print(`tls error ${err}: ${sys.errno()}: ${sys.strerror(sys.errno())}`)
+    const err = tls.error(this.buffer, bytes)
+    if (err === tls.SSL_ERROR_WANT_READ) {
+      const errno = sys.errno()
+      if (errno !== EAGAIN) {
+        just.print(`tls read error: ${sys.errno()}: ${sys.strerror(sys.errno())}`)
         this.close()
       }
+    } else {
+      just.print(`tls error ${err}: ${sys.errno()}: ${sys.strerror(sys.errno())}`)
+      this.close()
     }
     return bytes
   }
@@ -210,7 +209,7 @@ class Socket {
   }
 
   resume () {
-    loop.update(this.fd, EPOLLIN | EPOLLOUT)
+    loop.update(this.fd, EPOLLIN)
     this.paused = false
   }
 
@@ -335,7 +334,6 @@ class ChunkParser {
         } else if (c === 10) {
           if (this.final) {
             this.reset()
-            just.print('empty return')
             return
           }
           if (digits.length) {
@@ -369,7 +367,6 @@ class ChunkParser {
         throw new Error('OOB')
       } else {
         const remaining = this.size - this.consumed
-        //just.print(`len ${len} remaining ${remaining} size ${this.size}`)
         if (remaining > len) {
           chunks.push(this.buffer.slice(off, off + len))
           this.consumed += len
@@ -379,7 +376,12 @@ class ChunkParser {
           chunks.push(this.buffer.slice(off, off + remaining))
           len -= remaining
           off += remaining
-          this.reset()
+          this.consumed += remaining
+          if (this.consumed === this.size) {
+            this.reset()
+            off += 2
+            len -= 2
+          }
         }
       }
     }
@@ -403,7 +405,6 @@ async function fetch (url, options) {
   const dv = new DataView(info)
   const handle = createHandle(sock.buffer, info)
   let body = []
-  let bodyLen = 0
   let remaining = 0
 
   let bytes = await sock.pull()
@@ -418,12 +419,14 @@ async function fetch (url, options) {
   }
 
   const res = getResponse()
+  res.bytes = 0
+  const empty = { byteLength: 0 }
   res.json = async () => {
     const text = await res.text()
     return JSON.parse(text)
   }
   res.pull = async () => {
-    if (res.contentLength && (bodyLen === res.contentLength)) return
+    if (!body.length && res.contentLength && (res.bytes === res.contentLength)) return
     if (body.length) {
       return body.shift()
     }
@@ -431,14 +434,19 @@ async function fetch (url, options) {
     if (bytes < 0) throw new SystemError('pull')
     if (bytes === 0) return
     if (res.chunked) {
-      just.print(bytes)
       const chunks = parser.parse(bytes, 0)
       if (!chunks) return
-      just.print(chunks.length)
-      if (chunks.length) body = body.concat(chunks)
-      return body.shift()
+      if (chunks.length) {
+        res.bytes += chunks.reduce((size, chunk) => size + chunk.byteLength, 0)
+        body = body.concat(chunks)
+      }
+      just.print(`total ${res.bytes} chunkSize ${parser.size} consumed ${parser.consumed}`)
+      const chunk = body.shift()
+      if (chunk) return chunk
+      return empty
+    } else {
+      res.bytes += bytes
     }
-    bodyLen += bytes
     return sock.buffer.slice(0, bytes)
   }
   res.chunkedText = async () => {
@@ -446,8 +454,10 @@ async function fetch (url, options) {
     while (bytes) {
       const chunks = parser.parse(bytes, 0)
       if (!chunks) break
-      if (chunks.length) body = body.concat(chunks)
-      bodyLen += bytes
+      if (chunks.length) {
+        res.bytes += chunks.reduce((size, chunk) => size + chunk.byteLength, 0)
+        body = body.concat(chunks)
+      }
       bytes = await sock.pull()
     }
     releaseSocket(sock)
@@ -455,15 +465,15 @@ async function fetch (url, options) {
   }
   res.text = async () => {
     if (res.chunked) return res.chunkedText()
-    if (res.contentLength && (bodyLen === res.contentLength)) {
+    if (res.contentLength && (res.bytes === res.contentLength)) {
       releaseSocket(sock)
       return body.map(buf => buf.readString(buf.byteLength, 0)).join('')
     }
     let bytes = await sock.pull()
     while (bytes) {
       body.push(sock.buffer.slice(0, bytes))
-      bodyLen += bytes
-      if (res.contentLength && (bodyLen === res.contentLength)) {
+      res.bytes += bytes
+      if (res.contentLength && (res.bytes === res.contentLength)) {
         releaseSocket(sock)
         return body.map(buf => buf.readString(buf.byteLength, 0)).join('')
       }
@@ -487,13 +497,16 @@ async function fetch (url, options) {
   if (remaining > 0) {
     if (res.chunked) {
       const chunks = parser.parse(remaining, sock.buffer.offset + bytes - remaining)
-      if (chunks.length) body = body.concat(chunks)
+      if (chunks && chunks.length) {
+        res.bytes += chunks.reduce((size, chunk) => size + chunk.byteLength, 0)
+        body = body.concat(chunks)
+      }
     } else {
       body.push(sock.buffer.slice(sock.buffer.offset + bytes - remaining, sock.buffer.offset + bytes))
-      bodyLen += remaining
+      res.bytes += remaining
     }
   }
-  if (!res.chunked && (bodyLen === res.contentLength)) {
+  if (!res.chunked && (res.bytes === res.contentLength)) {
     releaseSocket(sock)
   }
 
