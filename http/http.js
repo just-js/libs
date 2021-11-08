@@ -149,23 +149,13 @@ function responseParser (buffer) {
   const dv = new DataView(info)
   const parser = createHandle(buffer, info)
   function parse (bytes, off = 0) {
-    const { offset } = buffer
-    parseResponsesHandle(parser, offset + bytes, off)
+    parseResponsesHandle(parser, bytes, off)
     const r = dv.getUint32(0, true)
     const count = r & 0xff
     const remaining = r >> 16
-    if (remaining > 0) {
-      const start = offset + bytes - remaining
-      buffer.offset = start
-      buffer.remaining = remaining
-      if (count > 0) {
-        parser.onResponses(count)
-      }
-      // todo?
-    } else {
-      if (count > 0) {
-        parser.onResponses(count)
-      }
+    just.print(`count ${count} remaining ${remaining}`)
+    if (count > 0) {
+      parser.onResponses(count, remaining)
     }
     buffer.offset = 0
   }

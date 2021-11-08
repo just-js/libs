@@ -27,7 +27,8 @@ const {
   EPOLLERR,
   EPOLLHUP,
   EPOLLIN,
-  EPOLLOUT
+  EPOLLOUT,
+  EPOLLET
 } = epoll
 
 const { loop } = just.factory
@@ -88,9 +89,14 @@ function releaseSocket (sock) {
   socketMap.set(`${sock.ip}:${sock.port}`, [sock])
 }
 
+function getHeaders (headers) {
+  if (!headers) return ''
+  return Object.keys(headers).map(key => `${key}: ${headers[key]}\r\n`).join('')
+}
+
 function writeRequest (sock, req) {
-  const headers = `${req.method} ${req.path} HTTP/1.1\r\nUser-Agent: ${req.userAgent}\r\nAccept: ${req.accept}\r\nHost: ${req.hostname}\r\n\r\n`
-  const bytes = sock.write(headers)
+  const headers = `${req.method} ${req.path} HTTP/1.1\r\nUser-Agent: ${req.userAgent}\r\nAccept: ${req.accept}\r\nHost: ${req.hostname}\r\n${getHeaders(req.headers)}\r\n`
+  const bytes = sock.write(`${headers}${req.body || ''}`)
   if (bytes < headers.length) {
     just.print('short write')
   }
@@ -117,9 +123,13 @@ class Request {
     this.path = path
     this.method = options.method || 'GET'
     this.fileName = options.fileName
-    this.headers = options.headers
+    this.headers = options.headers || {}
     this.userAgent = 'curl/7.58.0'
     this.accept = '*/*'
+    this.body = options.body
+    if (this.body) {
+      this.headers['Content-Length'] = String.byteLength(this.body)
+    }
   }
 }
 
@@ -226,6 +236,7 @@ class Socket {
     const socket = this
     this.tls = tls.clientContext(new ArrayBuffer(0))
     return new Promise((resolve, reject) => {
+      loop.remove(this.fd)
       loop.add(this.fd, (fd, event) => {
         if (event & EPOLLERR || event & EPOLLHUP) {
           this.close()
@@ -267,6 +278,7 @@ class Socket {
     }
     if (this.keepAlive) this.setKeepalive(true)
     if (this.noDelay) this.setNoDelay(true)
+    let resolved = false
     return new Promise((resolve, reject) => {
       loop.add(socket.fd, (fd, event) => {
         if (event & EPOLLERR || event & EPOLLHUP) {
@@ -275,8 +287,8 @@ class Socket {
           return
         }
         if (event & EPOLLOUT) {
-          loop.remove(socket.fd)
-          resolve()
+          if (!resolved) resolve()
+          resolved = true
           return
         }
         reject(new Error('unexpected epoll state'))
@@ -377,11 +389,7 @@ class ChunkParser {
           len -= remaining
           off += remaining
           this.consumed += remaining
-          if (this.consumed === this.size) {
-            this.reset()
-            off += 2
-            len -= 2
-          }
+          this.reset()
         }
       }
     }
@@ -440,7 +448,7 @@ async function fetch (url, options) {
         res.bytes += chunks.reduce((size, chunk) => size + chunk.byteLength, 0)
         body = body.concat(chunks)
       }
-      just.print(`total ${res.bytes} chunkSize ${parser.size} consumed ${parser.consumed}`)
+      just.print(`bytes ${bytes} total ${res.bytes} chunkSize ${parser.size} consumed ${parser.consumed}`)
       const chunk = body.shift()
       if (chunk) return chunk
       return empty
@@ -458,6 +466,7 @@ async function fetch (url, options) {
         res.bytes += chunks.reduce((size, chunk) => size + chunk.byteLength, 0)
         body = body.concat(chunks)
       }
+      just.print(res.bytes)
       bytes = await sock.pull()
     }
     releaseSocket(sock)
@@ -481,7 +490,7 @@ async function fetch (url, options) {
     }
   }
   res.request = req
-  res.sock = sock
+  res.socket = sock
   let parser
 
   sock.buffer.offset = 0
@@ -501,6 +510,7 @@ async function fetch (url, options) {
         res.bytes += chunks.reduce((size, chunk) => size + chunk.byteLength, 0)
         body = body.concat(chunks)
       }
+      just.print(`bytes ${remaining} total ${res.bytes} chunkSize ${parser.size} consumed ${parser.consumed}`)
     } else {
       body.push(sock.buffer.slice(sock.buffer.offset + bytes - remaining, sock.buffer.offset + bytes))
       res.bytes += remaining

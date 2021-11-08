@@ -2,19 +2,24 @@ const { epoll } = just.library('epoll')
 const { http } = just.library('http')
 const { sys } = just.library('sys')
 const { net } = just.library('net')
+const { sendfile } = just.library('fs')
+const { tls } = just.library('tls', 'openssl.so')
 
 const { parseRequestsHandle, createHandle, getUrl, getMethod, getHeaders } = http
-const { EPOLLIN, EPOLLERR, EPOLLHUP } = epoll
+const { EPOLLIN, EPOLLERR, EPOLLHUP, EPOLLOUT } = epoll
 const { close, recv, accept, setsockopt, socket, bind, listen, sendString, send } = net
 const { fcntl } = sys
 const { loop } = just.factory
 const { F_GETFL, F_SETFL } = just.sys
 const { IPPROTO_TCP, O_NONBLOCK, TCP_NODELAY, SO_KEEPALIVE, SOMAXCONN, AF_INET, SOCK_STREAM, SOL_SOCKET, SO_REUSEADDR, SO_REUSEPORT, SOCK_NONBLOCK } = just.net
 const { setInterval } = just
+const { SSL_OP_ALL, SSL_OP_NO_RENEGOTIATION, SSL_OP_NO_SSLv3, SSL_OP_NO_TLSv1, SSL_OP_NO_TLSv1_1, SSL_OP_NO_DTLSv1, SSL_OP_NO_DTLSv1_2 } = (tls || {})
+
+let time = (new Date()).toUTCString()
 
 function createResponses (serverName) {
   // todo: expose this so it can be configured
-  const time = (new Date()).toUTCString()
+  time = (new Date()).toUTCString()
   Object.keys(contentTypes).forEach(contentType => {
     Object.keys(statusMessages).forEach(status => {
       responses[contentType][status] = `HTTP/1.1 ${status} ${statusMessages[status]}\r\nServer: ${serverName}\r\nContent-Type: ${contentTypes[contentType]}\r\nDate: ${time}\r\nContent-Length: `
@@ -56,10 +61,41 @@ class Response {
     this.status = 200
     this.headers = []
     this.onFinish = onFinish
+    this.contentType = 'text'
+    this.chunked = false
+    this.contentLength = 0
+    this.close = false
+  }
+
+  sendFile (fd) {
+    return sendString(this.fd, str)
+  }
+
+  send (buf, len, off) {
+    return send(this.fd, buf, len, off)
+  }
+
+  sendString (str) {
+    return sendString(this.fd, str)
   }
 
   write (str) {
-    sendString(this.fd, str)
+    return this.sendString(str)
+  }
+
+  writeHeaders () {
+    const { status, socket, contentType, chunked, contentLength, close } = this
+    const { server } = socket
+    let str = `HTTP/1.1 ${status} ${statusMessages[status]}\r\nServer: ${server.name}\r\nContent-Type: ${contentTypes[contentType]}\r\nDate: ${time}\r\n`
+    if (close) {
+      str += 'Connection: close\r\n'
+    }
+    if (chunked) {
+      str += 'Transfer-Encoding: chunked\r\n\r\n'
+    } else {
+      str += `Content-Length: ${contentLength}\r\n\r\n`
+    }
+    return this.sendString(str)
   }
 
   setHeader (...args) {
@@ -79,7 +115,7 @@ class Response {
       this.queue += `${json[this.status]}${String.byteLength(str)}${END}${str}`
       return
     }
-    sendString(this.fd, `${json[this.status]}${String.byteLength(str)}${END}${str}`)
+    this.sendString(`${json[this.status]}${String.byteLength(str)}${END}${str}`)
     this.end()
   }
 
@@ -90,10 +126,10 @@ class Response {
       return
     }
     if (this.headers.length) {
-      sendString(this.fd, `${contentType[this.status]}${str.length}${CRLF}${joinHeaders(this.headers)}${END}${str}`)
+      this.sendString(`${contentType[this.status]}${str.length}${CRLF}${joinHeaders(this.headers)}${END}${str}`)
       return
     }
-    sendString(this.fd, `${contentType[this.status]}${str.length}${END}${str}`)
+    this.sendString(`${contentType[this.status]}${str.length}${END}${str}`)
     this.end()
   }
 
@@ -102,7 +138,7 @@ class Response {
       this.queue += `${html[this.status]}${str.length}${END}${str}`
       return
     }
-    sendString(this.fd, `${html[this.status]}${String.byteLength(str)}${END}${str}`)
+    this.sendString(`${html[this.status]}${String.byteLength(str)}${END}${str}`)
     this.end()
   }
 
@@ -112,27 +148,27 @@ class Response {
       return
     }
     if (this.headers.length) {
-      sendString(this.fd, `${contentType[this.status]}${String.byteLength(str)}${CRLF}${joinHeaders(this.headers)}${END}${str}`)
+      this.sendString(`${contentType[this.status]}${String.byteLength(str)}${CRLF}${joinHeaders(this.headers)}${END}${str}`)
       return
     }
-    sendString(this.fd, `${contentType[this.status]}${String.byteLength(str)}${END}${str}`)
+    this.sendString(`${contentType[this.status]}${String.byteLength(str)}${END}${str}`)
     this.end()
   }
 
   raw (buf, contentType = octet) {
     if (this.headers.length) {
-      sendString(this.fd, `${contentType[this.status]}${buf.byteLength}${CRLF}${joinHeaders(this.headers)}${END}`)
-      send(this.fd, buf, buf.byteLength, 0)
+      this.sendString(`${contentType[this.status]}${buf.byteLength}${CRLF}${joinHeaders(this.headers)}${END}`)
+      this.send(buf, buf.byteLength, 0)
       return
     }
-    sendString(this.fd, `${contentType[this.status]}${buf.byteLength}${END}`)
-    send(this.fd, buf, buf.byteLength, 0)
+    this.sendString(`${contentType[this.status]}${buf.byteLength}${END}`)
+    this.send(buf, buf.byteLength, 0)
     this.end()
   }
 
   finish () {
     if (this.pipeline && this.queue.length) {
-      sendString(this.fd, this.queue)
+      this.sendString(this.queue)
       // todo: check return codes - backpressure
       //const written = sendString(this.fd, this.queue)
       //just.print(`length ${this.queue.length} written ${written}`)
@@ -224,6 +260,7 @@ class Socket {
     this.buf = new ArrayBuffer(bufferSize)
     this.len = this.buf.byteLength
     this.off = 0
+    this.tls = null
     this.response = new Response(fd, onResponseComplete)
     this.request = null
     this.response.socket = this
@@ -231,11 +268,18 @@ class Socket {
     const info = new ArrayBuffer(4)
     this.dv = new DataView(info)
     this.parser = createHandle(this.buf, info)
+    this.server = null
   }
 
   close () {
-    loop.remove(this.fd)
-    close(this.fd)
+    const { fd, buf } = this
+    loop.remove(fd)
+    if (this.tls) {
+      // todo - wait for clean shutdown before removing from loop and closing?
+      tls.shutdown(buf)
+      tls.free(buf)
+    }
+    close(fd)
   }
 
   onEvent (fd, event) {
@@ -243,10 +287,81 @@ class Socket {
       this.close()
       return true
     }
-    let bytes = recv(fd, this.buf, this.off, this.len)
-    if (bytes <= 0) {
-      this.close()
-      return true
+    if (this.tls) {
+      const { handshake, secured, serverContext } = this.tls
+      if (!handshake) {
+        let r = 0
+        if (!secured) {
+          r = tls.acceptSocket(fd, serverContext, this.buf)
+          this.tls.secured = true
+        } else {
+          r = tls.handshake(this.buf)
+        }
+        if (r === 1) {
+          this.tls.handshake = true
+          //just.print('handshake complete')
+          this.response.sendString = str => {
+            return tls.write(this.buf, this.buf.writeString(str))
+          }
+          this.response.send = (buf, len, off) => {
+            return tls.write(this.buf, this.buf.copyFrom(buf, off, len))
+          }
+          return
+        }
+        //just.print(`handshake fail ${r}`)
+        const err = tls.error(this.buf, r)
+        //just.print(`handshake fail ${err}`)
+        if (err === tls.SSL_ERROR_WANT_WRITE) {
+          //just.print(`set EPOLLOUT`)
+          loop.update(fd, EPOLLOUT)
+        } else if (err === tls.SSL_ERROR_WANT_READ) {
+          //just.print(`set EPOLLIN`)
+          loop.update(fd, EPOLLIN)
+        } else {
+          //just.print(`socket handshake error ${err}: ${tls.error(this.buf, err)}`)
+          net.shutdown(fd)
+        }
+        return
+      }
+    }
+    if (event & EPOLLOUT) {
+      //just.print(`EPOLLOUT ${fd}`)
+      loop.update(fd, EPOLLIN)
+      return
+    }
+    const { buf } = this
+    let bytes = 0
+    if (this.tls) {
+      bytes = tls.read(buf)
+      //just.print(`bytes ${fd} ${bytes}`)
+      if (bytes < 0) {
+        const err = tls.error(buf, bytes)
+        if (err === tls.SSL_ERROR_WANT_READ) {
+          const errno = sys.errno()
+          if (errno !== EAGAIN) {
+            just.print(`tls read error: ${sys.errno()}: ${sys.strerror(sys.errno())}`)
+          }
+        } else {
+          just.print(`tls read error: negative bytes:  ${tls.error(buf, err)}`)
+        }
+        return
+      }
+      if (bytes === 0) {
+        const err = tls.error(buf, bytes)
+        if (err === tls.SSL_ERROR_ZERO_RETURN) {
+          just.print(`tls read error: ssl has been shut down:  ${tls.error(buf, err)}`)
+        } else {
+          just.print(`tls read error: connection has been aborted: ${tls.error(buf, err)}`)
+        }
+        this.close()
+        return
+      }
+    } else {
+      bytes = recv(fd, this.buf, this.off, this.len)
+      if (bytes <= 0) {
+        this.close()
+        return true
+      }
     }
     if (this.inBody) {
       const { request } = this
@@ -260,6 +375,7 @@ class Socket {
       } else {
         request.onBody(this.buf, bytes, this.off)
         this.off = 0
+        request.bytes -= bytes
         return false
       }
     }
@@ -267,7 +383,7 @@ class Socket {
     // TODO: shouldn't we close here?
     if (bytes === 0) return
     // TODO: we need to loop and keep parsing until all bytes are consumed
-    parseRequestsHandle(this.parser, this.off + bytes, 0, answer)
+    parseRequestsHandle(this.parser, this.off + bytes, 0)
     const r = dv.getUint32(0, true)
     const count = r & 0xffff
     const remaining = r >> 16
@@ -352,6 +468,7 @@ class Server {
     this.address = '127.0.0.1'
     this.port = 3000
     this.stackTraces = false
+    this.tls = opts.tls || null
   }
 
   connect (handler) {
@@ -419,6 +536,11 @@ ${err.stack}
       }
     }
     return this
+  }
+
+  removePath (method, path) {
+    // this only works for staticHandlers as we cannot compared to regex
+    delete this.staticHandlers[method][path]
   }
 
   get (path, handler, opts) {
@@ -543,36 +665,39 @@ ${err.stack}
   }
 
   listen (port = 3000, address = '127.0.0.1', maxConn = SOMAXCONN) {
+    const server = this
     const fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0)
     if (fd < 1) return fd
-    this.fd = fd
-    serverOptions(fd, this.opts)
+    const { hooks, opts, sockets } = server
+    server.fd = fd
+    server.address = address
+    server.port = port
+    serverOptions(fd, opts)
     let r = bind(fd, address, port)
     if (r < 0) return r
     r = listen(fd, maxConn)
     if (r < 0) return r
-    const server = this
-    const { sockets } = server
-    const requestHandler = (response, request) => this.handleRequest(response, request)
+    const requestHandler = (response, request) => server.handleRequest(response, request)
     function onResponseComplete (response, request) {
-      if (server.hooks.post.length) {
-        for (const handler of server.hooks.post) handler(response, request)
-      }
+      for (const handler of hooks.post) handler(response, request)
     }
     loop.add(fd, (fd, event) => {
+      // todo: surface any socket errors
       if (checkError(fd, event)) return
       const newfd = accept(fd)
-      clientOptions(newfd, server.opts)
+      clientOptions(newfd, opts)
       let socket
-      if (this.hooks.post.length) {
+      if (hooks.post.length) {
         socket = new Socket(newfd, requestHandler, onResponseComplete)
       } else {
         socket = new Socket(newfd, requestHandler, () => {})
       }
+      socket.server = this
+      if (server.tls) socket.tls = { serverContext: server.tls.context }
       loop.add(newfd, (fd, event) => {
         if (socket.onEvent(fd, event)) {
-          if (this.hooks.disconnect.length) {
-            for (const handler of this.hooks.disconnect) handler(socket)
+          if (hooks.disconnect.length) {
+            for (const handler of hooks.disconnect) handler(socket)
           }
           delete sockets[fd]
         }
@@ -580,14 +705,12 @@ ${err.stack}
       const flags = fcntl(newfd, F_GETFL, 0) | O_NONBLOCK
       fcntl(newfd, F_SETFL, flags)
       loop.update(newfd, EPOLLIN | EPOLLERR | EPOLLHUP)
-      this.sockets[newfd] = socket
-      if (this.hooks.connect.length) {
-        for (const handler of this.hooks.connect) handler(socket)
+      sockets[newfd] = socket
+      if (hooks.connect.length) {
+        for (const handler of hooks.connect) handler(socket)
       }
     })
-    this.address = address
-    this.port = port
-    return this
+    return server
   }
 }
 
@@ -613,7 +736,6 @@ const statusMessages = {
 const CONTENT_LENGTH = 'Content-Length'
 const GET = 'GET'
 const bufferSize = 64 * 1024
-const answer = [0, 0]
 const responses = { js: {}, text: {}, utf8: {}, json: {}, html: {}, css: {}, octet: {} }
 responses.ico = {}
 responses.png = {}
@@ -640,6 +762,11 @@ const defaultOptions = {
 
 module.exports = {
   createServer: (opts = defaultOptions, handler) => {
+    if (opts.tls) {
+      const options = BigInt(opts.tls.options || (SSL_OP_ALL | SSL_OP_NO_RENEGOTIATION | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1 | SSL_OP_NO_DTLSv1 | SSL_OP_NO_DTLSv1_2))
+      const { cert = 'cert.pem', key = 'key.pem' } = opts.tls
+      opts.tls.context = tls.serverContext(new ArrayBuffer(0), cert, key, options)
+    }
     const o = JSON.parse(JSON.stringify(defaultOptions))
     const server = new Server(Object.assign(o, opts))
     if (handler) server.default(handler)
@@ -647,5 +774,9 @@ module.exports = {
   },
   defaultOptions,
   responses,
-  contentTypes
+  contentTypes,
+  Socket,
+  Server,
+  Request,
+  Response
 }
