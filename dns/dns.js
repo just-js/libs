@@ -142,4 +142,23 @@ function lookup (query = 'www.google.com', onRecord = () => {}, address = dnsSer
   }, 1000)
 }
 
-module.exports = { lookup }
+const dnsMap = new Map()
+
+function getIPAddress (hostname, map = dnsMap) {
+  return new Promise((resolve, reject) => {
+    if (map.has(hostname)) {
+      resolve(map.get(hostname))
+      return
+    }
+    lookup(hostname, (err, ip) => {
+      if (err) {
+        reject(err)
+        return
+      }
+      map.set(hostname, ip)
+      resolve(ip)
+    })
+  })
+}
+
+module.exports = { lookup, getIPAddress }

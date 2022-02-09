@@ -158,7 +158,7 @@ function Parser () {
     return { frame, header, message, offset, bytes, remaining }
   }
 
-  return { u8, buf, parse }
+  return { u8, dv, buf, parse }
 }
 
 module.exports = { Parser, protocols }

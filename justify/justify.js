@@ -545,31 +545,31 @@ ${err.stack}
 
   get (path, handler, opts) {
     if (opts) handler.opts = opts
-    this.addPath(path, handler, 'GET')
+    this.addPath(path, handler, methods.get)
     return this
   }
 
   put (path, handler, opts) {
     if (opts) handler.opts = opts
-    this.addPath(path, handler, 'PUT')
+    this.addPath(path, handler, methods.put)
     return this
   }
 
   post (path, handler, opts) {
     if (opts) handler.opts = opts
-    this.addPath(path, handler, 'POST')
+    this.addPath(path, handler, methods.post)
     return this
   }
 
   delete (path, handler, opts) {
     if (opts) handler.opts = opts
-    this.addPath(path, handler, 'DELETE')
+    this.addPath(path, handler, methods.delete)
     return this
   }
 
   options (path, handler, opts) {
     if (opts) handler.opts = opts
-    this.addPath(path, handler, 'OPTIONS')
+    this.addPath(path, handler, methods.options)
     return this
   }
 
@@ -713,7 +713,13 @@ ${err.stack}
     return server
   }
 }
-
+const methods = {
+  get: 'GET'.charCodeAt(0),
+  put: 'PUT'.charCodeAt(0),
+  post: 'POST'.charCodeAt(0),
+  delete: 'DELETE'.charCodeAt(0),
+  options: 'OPTIONS'.charCodeAt(0)
+}
 const contentTypes = {
   text: 'text/plain',
   css: 'text/css',

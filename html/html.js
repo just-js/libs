@@ -205,7 +205,7 @@ class Parser {
 
 let index = 0
 
-function compile (template, name = 'template', root = '', opts) {
+function compile (template, name = 'template', root = '', opts = {}) {
   const { plugins = {}, rawStrings } = opts
   const tokenizer = new Tokenizer()
   tokenizer.tokenize(template)
