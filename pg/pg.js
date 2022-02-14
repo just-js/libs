@@ -1,148 +1,159 @@
-const { createClient } = require('@tcp')
-const { lookup } = require('@dns')
-const md5 = require('@md5')
 const { html } = just.library('html')
-const common = require('common.js')
-const parser = require('parser.js')
-const { constants } = common
-const { createParser } = parser
+const { constants } = require('common.js')
+const { createParser } = require('parser.js')
+const md5 = require('@md5')
 
+const { messageFields } = constants
 const { INT4OID, VARCHAROID } = constants.fieldTypes
-const {
-  AuthenticationOk,
-  ErrorResponse,
-  NoticeResponse,
-  RowDescription,
-  CommandComplete,
-  ParseComplete,
-  NoData,
-  ReadyForQuery,
-  CloseComplete,
-  BackendKeyData,
-  BindComplete,
-  NotificationResponse
-} = constants.messageTypes
-const { messageNames, messageFields } = constants
 
-class Messaging {
+class NameIndex {
+  constructor () {
+    this.index = 0
+    this.vals = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-+'
+  }
+
+  getId (name) {
+    const { vals, index } = this
+    if (index >= vals.length) return name
+    const id = vals.charCodeAt(index)
+    this.index++
+    return id
+  }
+}
+
+const nameIndexer = new NameIndex()
+
+class Protocol {
   constructor (buffer, config) {
-    const { sql, formats, portal, name, params, fields, maxRows = 100 } = config
     this.buffer = buffer
     this.view = new DataView(buffer)
     this.bytes = new Uint8Array(buffer)
-    this.off = 0
-    this.sql = sql
-    this.formats = formats
-    this.portal = portal
-    this.name = name
-    this.params = params
-    this.fields = fields
-    this.maxRows = maxRows
-    this.index = 0
+    this.len = buffer.byteLength
+    this.params = config.params
+    this.config = config
+    this.id = nameIndexer.getId(config.name)
   }
 
-  createPrepareMessage (off = this.off) {
-    const { view, buffer, formats, name, sql } = this
-    const len = 9 + String.byteLength(sql) + name.length + (formats.length * 4)
+  startup (off = 0) {
+    const { view, buffer, config } = this
+    const { user, database, version, parameters = [] } = config
+    view.setInt32(0, 0)
+    off += 4
+    view.setInt32(4, version) // protocol version
+    off += 4
+    off += buffer.writeString('user', off)
+    view.setUint8(off++, 0)
+    off += buffer.writeString(user, off)
+    view.setUint8(off++, 0)
+    off += buffer.writeString('database', off)
+    view.setUint8(off++, 0)
+    off += buffer.writeString(database, off)
+    view.setUint8(off++, 0)
+    for (let i = 0; i < parameters.length; i++) {
+      const { name, value } = parameters[i]
+      off += buffer.writeString(name, off)
+      view.setUint8(off++, 0)
+      off += buffer.writeString(value, off)
+      view.setUint8(off++, 0)
+    }
+    view.setUint8(off++, 0)
+    view.setInt32(0, off)
+    return off
+  }
+
+  md5auth (off = 0) {
+    const { view, buffer, config } = this
+    const { user, pass, salt } = config
+    const token = `${pass}${user}`
+    let hash = md5(token)
+    const plain = new ArrayBuffer(36)
+    plain.writeString(`md5${hash}`, 0)
+    const plain2 = new ArrayBuffer(36)
+    plain2.copyFrom(plain, 0, 32, 3)
+    plain2.copyFrom(salt, 32, 4)
+    hash = `md5${md5(plain2)}`
+    const len = hash.length + 5
+    view.setUint8(off++, 112)
+    view.setUint32(off, len)
+    off += 4
+    off += buffer.writeString(hash, off)
+    view.setUint8(off++, 0)
+    return off
+  }
+
+  parse (off = 0) {
+    const { view, buffer, config, id, bytes } = this
+    const { formats, sql } = config
+    const flen = formats.length
+    const len = 9 + String.byteLength(sql) + 1 + (flen * 4)
     view.setUint8(off++, 80) // 'P'
     view.setUint32(off, len - 1)
     off += 4
-    off += buffer.writeString(name, off)
+    bytes[off++] = id
     view.setUint8(off++, 0)
     off += buffer.writeString(sql, off)
     view.setUint8(off++, 0)
-    view.setUint16(off, formats.length)
+    view.setUint16(off, flen)
     off += 2
-    for (let i = 0; i < formats.length; i++) {
-      view.setUint32(off, formats[i].format.oid)
+    for (let i = 0; i < flen; i++) {
+      view.setUint32(off, formats[i].oid)
       off += 4
     }
-    return { off, len }
+    return off
   }
 
-  createDescribeMessage (off = this.off) {
-    const { view, buffer, name } = this
-    const len = 7 + name.length
+  describe (off = 0) {
+    const { view, id, bytes } = this
+    const len = 8
     view.setUint8(off++, 68) // 'D'
     view.setUint32(off, len - 1)
     off += 4
     view.setUint8(off++, 83) // 'S'
-    off += buffer.writeString(name, off)
+    bytes[off++] = id
     view.setUint8(off++, 0)
-    return { off, len }
+    return off
   }
 
-  createFlushMessage (off = this.off) {
-    const { view } = this
-    view.setUint8(off++, 72) // 'H'
-    view.setUint32(off, 4)
-    off += 4
-    return { off }
-  }
-
-  createSyncMessage (off = this.off) {
-    const { view } = this
-    view.setUint8(off++, 83) // 'S'
-    view.setUint32(off, 4)
-    off += 4
-    return { off }
-  }
-
-  createExecMessage (off = this.off) {
-    const { view, buffer, portal, maxRows } = this
-    const len = 6 + portal.length + 4
-    view.setUint8(off++, 69) // 'E'
-    view.setUint32(off, len - 1)
-    off += 4
-    if (portal.length) {
-      off += buffer.writeString(portal, off)
-    }
-    view.setUint8(off++, 0)
-    view.setUint32(off, maxRows)
-    off += 4
-    return { len, off }
-  }
-
-  createBindMessage (off = this.off) {
-    const { view, buffer, formats, portal, name, params, fields } = this
+  bind (off = 0) {
+    const { view, buffer, config, params, bytes, id } = this
+    const { formats, portal, fields } = config
     const start = off
+    const flen = formats.length || 0
+    const plen = params.length || 0
+    const filen = fields.length
     view.setUint8(off++, 66) // 'B'
     off += 4 // length - will be filled in later
     if (portal.length) {
       off += buffer.writeString(portal, off)
-      view.setUint8(off++, 0)
-      off += buffer.writeString(name, off)
-      view.setUint8(off++, 0)
-    } else {
-      view.setUint8(off++, 0)
-      off += buffer.writeString(name, off)
-      view.setUint8(off++, 0)
     }
-    view.setUint16(off, formats.length || 0)
+    view.setUint8(off++, 0)
+    bytes[off++] = id
+    view.setUint8(off++, 0)
+    view.setUint16(off, flen)
     off += 2
-    for (let i = 0; i < formats.length; i++) {
+    for (let i = 0; i < flen; i++) {
       view.setUint16(off, formats[i].format)
       off += 2
     }
-    view.setUint16(off, params.length || 0)
+    view.setUint16(off, plen)
     off += 2
-    const paramStart = off
-    for (let i = 0; i < params.length; i++) {
+    for (let i = 0; i < plen; i++) {
+      const param = params[i]
       if ((formats[i] || formats[0]).format === 1) {
         view.setUint32(off, 4)
         off += 4
-        view.setUint32(off, params[i])
+        view.setUint32(off, param)
         off += 4
       } else {
-        view.setUint32(off, params[i].length)
+        view.setUint32(off, param.length)
         off += 4
-        off += buffer.writeString(params[i], off)
+        off += buffer.writeString(param, off)
       }
     }
-    if (fields.length > 0) {
+    if (filen > 0) {
       const format = fields[0].format.format
       let same = true
-      for (let i = 1; i < fields.length; i++) {
+      for (let i = 1; i < filen; i++) {
         if (fields[i].format.format !== format) {
           same = false
           break
@@ -154,9 +165,9 @@ class Messaging {
         view.setUint16(off, fields[0].format.format)
         off += 2
       } else {
-        view.setUint16(off, fields.length)
+        view.setUint16(off, filen)
         off += 2
-        for (let i = 0; i < fields.length; i++) {
+        for (let i = 0; i < filen; i++) {
           view.setUint16(off, fields[i].format.format)
           off += 2
         }
@@ -166,558 +177,38 @@ class Messaging {
       off += 2
     }
     view.setUint32(start + 1, (off - start) - 1)
-    return { off, paramStart, len: off - start, start }
-  }
-}
-
-class Query {
-  constructor (sock, query, size) {
-    this.sock = sock
-    this.query = query
-    this.size = size
-    this.bindings = []
-    this.params = []
-    this.exec = null
-    this.prepare = null
-    this.pending = 0
-    this.syncing = 0
-    this.htmlEscape = html.escape
-    this.synced = 0
-    this.last = null
+    return off
   }
 
-  // TODO: add some logic for default portal to automatically prepare statement being executed on the default portal if it is not same as current prepared query
-  setup () {
-    const { size, query, bindings } = this
-    bindings.length = 0
-    // todo: we should be able to calculate the exact required size
-    const flushLen = 5
-    const prepareLen = 9 + String.byteLength(query.sql) + query.name.length + (query.formats.length * 4)
-    const describeLen = 7 + query.name.length
-    const bindLen = 1 + 4 + query.portal.length + 1 + query.name.length + 1 + (query.formats.length * 2) + 2 + (query.params.length * 8) + 2 + (query.fields.length * 2) + 2
-    // todo: we need to know size of variable length params
-    const execLen = 6 + query.portal.length + 4
-    const syncLen = 5
-    const bindExecLen = syncLen + (size * (bindLen + execLen))
-    const prepareDescribeLen = prepareLen + describeLen + flushLen
-    const e = new Messaging(new ArrayBuffer(bindExecLen), query)
-    for (let i = 0; i < size; i++) {
-      const bind = e.createBindMessage()
-      bindings.push(bind)
-      e.off = bind.off
-      const exec = e.createExecMessage()
-      e.off = exec.off
-      bind.size = exec.off
-    }
-    this.last = bindings[size - 1]
-    e.off = e.createSyncMessage().off
-
-    const p = new Messaging(new ArrayBuffer(prepareDescribeLen), query)
-    p.off = p.createPrepareMessage().off
-    p.off = p.createDescribeMessage().off
-    p.off = p.createFlushMessage().off
-
-    const s = new Messaging(new ArrayBuffer(syncLen), query)
-    const sync = s.createSyncMessage()
-    s.off = sync.off
-
-    const f = new Messaging(new ArrayBuffer(flushLen), query)
-    const flush = f.createSyncMessage()
-    f.off = flush.off
-
-    this.exec = e
-    this.flush = f
-    this.prepare = p
-    this.sync = s
-
-    return this
+  exec (off = 0) {
+    const { view, buffer, config } = this
+    const { portal, maxRows } = config
+    const len = 6 + portal.length + 4
+    view.setUint8(off++, 69) // 'E'
+    view.setUint32(off, len - 1)
+    off += 4
+    if (portal.length) off += buffer.writeString(portal, off)
+    view.setUint8(off++, 0)
+    view.setUint32(off, maxRows)
+    off += 4
+    return off
   }
 
-  // prepare the sql statement on the server
-  create () {
-    const batch = this
-    const { query, sock, prepare } = this
-    return new Promise((resolve, reject) => {
-      sock.push(() => {
-        // todo: put some logic in here to use binary format wherever we can even if server tells us the format is text
-        const { errors, fields } = sock.parser
-        if (query.fields.length < fields.length) {
-          query.fields = fields.map(field => {
-            const { name, format, oid } = field
-            return { name, format: { format, oid } }
-          })
-        }
-        if (errors.length) {
-          reject(createError(errors))
-          return
-        }
-        resolve(batch)
-      })
-      const r = sock.write(prepare.buffer, prepare.off, 0)
-      if (r <= 0) reject(new just.SystemError('Could Not Prepare Queries'))
-      // todo: eagain
-    })
+  flush (off = 0) {
+    const { view } = this
+    view.setUint8(off++, 72) // 'H'
+    view.setUint32(off, 4)
+    off += 4
+    return off
   }
 
-  compile () {
-    const { query, source } = this
-    const { read, writeSingle, writeBatch } = source
-    // todo. needs to be compiled in a separate context
-    if (read.length) this.read = just.vm.compile(read, `${query.name}r.js`, [], [])
-    if (writeBatch.length) this.writeBatch = just.vm.compile(writeBatch, `${query.name}w.js`, ['batchArgs', 'first'], [])
-    if (writeSingle.length) this.writeSingle = just.vm.compile(writeSingle, `${query.name}s.js`, ['binding'], [])
-    return this
+  sync (off = 0) {
+    const { view } = this
+    view.setUint8(off++, 83) // 'S'
+    view.setUint32(off, 4)
+    off += 4
+    return off
   }
-
-  generate () {
-    const { query } = this
-    const { fields, params, formats } = query
-
-    const source = []
-
-    source.push('  const { sock, htmlEscape } = this')
-    source.push('  const { state, dv, buf, u8 } = sock.parser')
-    source.push('  const { start, rows } = state')
-    source.push('  let off = start + 7')
-    source.push('  let len = 0')
-    source.push('  if (rows === 1) {')
-    for (const field of fields) {
-      const { name, format, htmlEscape } = field
-      if (format.oid === INT4OID) {
-        if (format.format === constants.formats.Binary) {
-          source.push(`    const ${name} = dv.getInt32(off + 4)`)
-          source.push('    off += 8')
-        } else {
-          source.push('    len = dv.getUint32(off)')
-          source.push('    off += 4')
-          source.push(`    const ${name} = parseInt(buf.readString(len, off), 10)`)
-          source.push('    off += len')
-        }
-      } else if (format.oid === VARCHAROID) {
-        source.push('    len = dv.getUint32(off)')
-        source.push('    off += 4')
-        if (format.format === constants.formats.Binary) {
-          source.push(`    const ${name} = buf.slice(off, off + len)`)
-        } else {
-          if (htmlEscape) {
-            source.push(`    const ${name} = htmlEscape(buf, len, off)`)
-          } else {
-            source.push(`    const ${name} = buf.readString(len, off)`)
-          }
-        }
-        source.push('    off += len')
-      }
-    }
-    source.push(`    return { ${fields.map(f => f.name).join(', ')} }`)
-    source.push('  }')
-    source.push('  const result = []')
-    source.push('  off = start + 7')
-    source.push('  for (let i = 0; i < rows; i++) {')
-    for (const field of fields) {
-      const { name, format, htmlEscape } = field
-      if (format.oid === INT4OID) {
-        if (format.format === constants.formats.Binary) {
-          source.push(`    const ${name} = dv.getInt32(off + 4)`)
-          source.push('    off += 8')
-        } else {
-          source.push('    len = dv.getInt32(off)')
-          source.push('    off += 4')
-          source.push(`    const ${name} = parseInt(buf.readString(len, off), 10)`)
-          source.push('    off += len')
-        }
-      } else if (format.oid === VARCHAROID) {
-        source.push('    len = dv.getInt32(off)')
-        source.push('    off += 4')
-        if (format.format === constants.formats.Binary) {
-          source.push(`    const ${name} = buf.slice(len, off)`)
-        } else {
-          if (htmlEscape) {
-            source.push(`    const ${name} = htmlEscape(buf, len, off)`)
-          } else {
-            source.push(`    const ${name} = buf.readString(len, off)`)
-          }
-        }
-        source.push('    off += len')
-      }
-    }
-    source.push('    if (u8[off] === 84) {')
-    source.push('      len = dv.getUint32(off + 1)')
-    source.push('      off += len')
-    source.push('    }')
-    source.push(`    result.push({ ${fields.map(f => f.name).join(', ')} })`)
-    source.push('    off += 7')
-    source.push('  }')
-    source.push('  return result')
-    const read = source.join('\n').trim()
-
-    source.length = 0
-    if (params.length) {
-      source.push('const { bindings, exec } = this')
-      source.push('const { view, buffer } = exec')
-      source.push('let next = 0')
-      source.push('for (let args of batchArgs) {')
-      source.push('  const binding = bindings[next + first]')
-      source.push('  const { paramStart, start, len } = binding')
-      source.push('  let off = paramStart')
-      for (let i = 0; i < params.length; i++) {
-        if ((formats[i] || formats[0]).oid === INT4OID) {
-          if ((formats[i] || formats[0]).format === constants.formats.Binary) {
-            if (params.length === 1) {
-              source.push('  view.setUint32(off + 4, args)')
-            } else {
-              source.push(`  view.setUint32(off + 4, args[${i}])`)
-            }
-            source.push('  off += 8')
-          } else {
-            if (params.length === 1) {
-              source.push('  const val = args.toString()')
-            } else {
-              source.push(`  const val = args[${i}]).toString()`)
-            }
-            source.push('  view.setUint32(off, val.length)')
-            source.push('  off += 4')
-            source.push('  off += buffer.writeString(val, off)')
-          }
-        } else {
-          if ((formats[i] || formats[0]).format === constants.formats.Binary) {
-            if (params.length === 1) {
-              source.push('  const paramString = args.toString()')
-            } else {
-              source.push(`  const paramString = args[${i}].toString()`)
-            }
-            source.push('  view.setUint32(paramStart, paramString.length)')
-            source.push('  off += 4')
-            source.push('  off += buffer.writeString(paramString, off)')
-          } else {
-            if (params.length === 1) {
-              source.push('  const buf = args')
-            } else {
-              source.push(`  const buf = args[${i}]`)
-            }
-            source.push('  view.setUint32(paramStart, buf.byteLength)')
-            source.push('  off += 4')
-            source.push('  off += buffer.copyFrom(buf, off, buf.byteLength, 0)')
-          }
-        }
-      }
-      source.push('  next++')
-      source.push('}')
-    }
-    const writeBatch = source.join('\n').trim()
-
-    source.length = 0
-    if (params.length) {
-      source.push('const { exec, query } = this')
-      source.push('const { params } = query')
-      source.push('const { view, buffer } = exec')
-      source.push('let off = binding.paramStart')
-      for (let i = 0; i < params.length; i++) {
-        if ((formats[i] || formats[0]).oid === INT4OID) {
-          if ((formats[i] || formats[0]).format === constants.formats.Binary) {
-            source.push(`view.setUint32(off + 4, params[${i}])`)
-            source.push('off += 8')
-          } else {
-            source.push(`const val = params[${i}]).toString()`)
-            source.push('view.setUint32(off, val.length)')
-            source.push('off += 4')
-            source.push('off += buffer.writeString(val, off)')
-          }
-        } else {
-          if ((formats[i] || formats[0]).format === constants.formats.Binary) {
-            source.push(`const buf = params[${i}]`)
-            source.push('view.setUint32(off, buf.byteLength)')
-            source.push('off += 4')
-            source.push('off += buffer.copyFrom(buf, off, buf.byteLength, 0)')
-          } else {
-            source.push(`const paramString = params[${i}].toString()`)
-            source.push('view.setUint32(off, paramString.length)')
-            source.push('off += 4')
-            source.push('off += buffer.writeString(paramString, off)')
-          }
-        }
-      }
-    }
-    const writeSingle = source.join('\n').trim()
-    this.source = { read, writeBatch, writeSingle }
-    return this
-  }
-
-  write (args, first) {}
-  writeSingle (off) {}
-  read () {
-    return []
-  }
-
-  commit () {
-    const binding = this.bindings[this.syncing - 1]
-    const { sock, exec } = this
-    const { size } = binding
-    exec.view.setUint8(size, 83)
-    exec.view.setUint32(size + 1, 4)
-    sock.write(exec.buffer, size + 5, 0)
-    exec.view.setUint8(size, 66)
-    exec.view.setUint32(size + 1, binding.len - 1)
-    this.syncing = 0
-  }
-
-  onSingle (callback) {
-    const { parser } = this.sock
-    this.pending--
-    if (this.syncing > 0 && this.syncing >= this.pending) this.commit()
-    if (parser.errors.length) {
-      callback(createError(parser.errors))
-      parser.errors.length = 0
-      return
-    }
-    if (parser.state.rows === 0) return callback()
-    callback(null, this.read())
-  }
-
-  onSingleAsync (resolve, reject) {
-    const { parser } = this.sock
-    this.pending--
-    if (this.syncing > 0 && this.syncing >= this.pending) this.commit()
-    if (parser.errors.length) {
-      reject(createError(parser.errors))
-      parser.errors.length = 0
-      return
-    }
-    if (parser.state.rows === 0) return resolve()
-    resolve(this.read())
-  }
-
-  runSingle (resolve) {
-    const { sock } = this
-    this.writeSingle(this.bindings[this.syncing])
-    this.syncing++
-    if (this.pending === 0) this.commit()
-    this.pending++
-    if (resolve) {
-      sock.push(() => this.onSingle(resolve))
-      return
-    }
-    return new Promise((resolve, reject) => {
-      sock.push(() => this.onSingleAsync(resolve, reject))
-    })
-  }
-
-  runSingleCommit (resolve) {
-    const { sock } = this
-    this.writeSingle(this.bindings[this.syncing])
-    this.syncing++
-    this.commit()
-    this.pending++
-    if (resolve) {
-      sock.push(() => this.onSingle(resolve))
-      return
-    }
-    return new Promise((resolve, reject) => {
-      sock.push(() => this.onSingleAsync(resolve, reject))
-    })
-  }
-
-  onBatch (callback, results, len, done) {
-    this.pending--
-    if (len === 1) {
-      if (this.syncing > 0 && this.syncing >= this.pending) this.commit()
-      if (parser.errors.length) {
-        callback(createError(parser.errors))
-        parser.errors.length = 0
-        return
-      }
-      if (this.sock.parser.state.rows === 0) {
-        callback(null, [])
-        return done
-      }
-      callback(null, [this.read()])
-      return done
-    }
-    results.push(this.read())
-    if (++done === len) {
-      if (this.syncing > 0 && this.syncing >= this.pending) {
-        this.commit()
-      }
-      if (parser.errors.length) {
-        callback(createError(parser.errors))
-        parser.errors.length = 0
-        return
-      }
-      if (this.sock.parser.state.rows === 0) {
-        callback(null, [])
-        return done
-      }
-      callback(null, results)
-    }
-    return done
-  }
-
-  onBatchAsync (resolve, reject, results, len, done) {
-    const { parser } = this.sock
-    this.pending--
-    if (len === 1) {
-      if (this.syncing > 0 && this.syncing >= this.pending) this.commit()
-      if (parser.errors.length) {
-        reject(createError(parser.errors))
-        parser.errors.length = 0
-        return
-      }
-      if (parser.state.rows === 0) {
-        resolve([])
-        return done
-      }
-      resolve([this.read()])
-      return done
-    }
-    results.push(this.read())
-    if (++done === len) {
-      if (this.syncing > 0 && this.syncing >= this.pending) this.commit()
-      if (parser.errors.length) {
-        reject(createError(parser.errors))
-        parser.errors.length = 0
-        return
-      }
-      if (parser.state.rows === 0) {
-        resolve([])
-        return done
-      }
-      resolve(results)
-    }
-    return done
-  }
-
-  runBatch (args = [[]], resolve) {
-    const { sock } = this
-    this.writeBatch(args, this.syncing)
-    const len = args.length
-    this.syncing += len
-    if (this.pending === 0) this.commit()
-    this.pending += len
-    const results = []
-    let done = 0
-    // todo; handle errors
-    if (resolve) {
-      args.forEach(() => sock.push(() => {
-        done = this.onBatch(resolve, results, len, done)
-      }))
-      return
-    }
-    return new Promise((resolve, reject) => {
-      args.forEach(() => sock.push(() => {
-        done = this.onBatchAsync(resolve, reject, results, len, done)
-      }))
-    })
-  }
-}
-
-function startupMessage (db) {
-  const { user, database, version, parameters = [] } = db
-  let len = 8 + 4 + 1 + user.length + 1 + 8 + 1 + database.length + 2
-  for (let i = 0; i < parameters.length; i++) {
-    const { name, value } = parameters[i]
-    len += (name.length + 1 + value.length + 1)
-  }
-  const buf = new ArrayBuffer(len)
-  const dv = new DataView(buf)
-  let off = 0
-  dv.setInt32(0, 0)
-  off += 4
-  dv.setInt32(4, version) // protocol version
-  off += 4
-  off += buf.writeString('user', off)
-  dv.setUint8(off++, 0)
-  off += buf.writeString(user, off)
-  dv.setUint8(off++, 0)
-  off += buf.writeString('database', off)
-  dv.setUint8(off++, 0)
-  off += buf.writeString(database, off)
-  dv.setUint8(off++, 0)
-  for (let i = 0; i < parameters.length; i++) {
-    const { name, value } = parameters[i]
-    off += buf.writeString(name, off)
-    dv.setUint8(off++, 0)
-    off += buf.writeString(value, off)
-    dv.setUint8(off++, 0)
-  }
-  dv.setUint8(off++, 0)
-  dv.setInt32(0, off)
-  return buf
-}
-
-function md5AuthMessage ({ user, pass, salt }) {
-  const token = `${pass}${user}`
-  let hash = md5(token)
-  const plain = new ArrayBuffer(36)
-  plain.writeString(`md5${hash}`, 0)
-  const plain2 = new ArrayBuffer(36)
-  plain2.copyFrom(plain, 0, 32, 3)
-  plain2.copyFrom(salt, 32, 4)
-  hash = `md5${md5(plain2)}`
-  const len = hash.length + 5
-  let off = 0
-  const buf = new ArrayBuffer(len + 1)
-  const dv = new DataView(buf)
-  dv.setUint8(off++, 112)
-  dv.setUint32(off, len)
-  off += 4
-  off += buf.writeString(hash, off)
-  dv.setUint8(off++, 0)
-  return buf
-}
-
-// ACTIONS - Async/Promise Interface
-// todo - turn this into a PGSocket class that extends Socket from TCP
-function authenticate (sock, user, pass, salt) {
-  sock.write(md5AuthMessage({ user, pass, salt }))
-  return new Promise((resolve, reject) => {
-    sock.push(err => {
-      if (err) return reject(err)
-      resolve()
-    })
-  })
-}
-
-function start (sock, db, parser) {
-  sock.write(startupMessage(db))
-  return new Promise((resolve, reject) => {
-    sock.push(err => {
-      if (err) return reject(err)
-      resolve(parser.salt)
-    })
-  })
-}
-
-function connectSocket (config, buffer) {
-  const { hostname, port } = config
-  return new Promise((resolve, reject) => {
-    lookup(hostname, (err, ip) => {
-      if (err) {
-        reject(err)
-        return
-      }
-      let connected = false
-      config.address = ip
-      const sock = createClient(ip, port)
-      sock.onClose = () => {
-        if (!connected) {
-          reject(new Error('Could Not Connect'))
-          return
-        }
-        // what to do if connection drops? retries?
-      }
-      sock.onConnect = err => {
-        if (err) {
-          reject(err)
-          return
-        }
-        connected = true
-        if (config.noDelay) sock.setNoDelay()
-        resolve(sock)
-        return buffer
-      }
-      sock.buffer = buffer
-      sock.connect()
-    })
-  })
 }
 
 class PGError extends Error {
@@ -738,122 +229,327 @@ function createError (errors) {
   return new PGError(errors)
 }
 
-async function createConnection (config) {
-  if (!config.bufferSize) config.bufferSize = 64 * 1024
-  if (!config.version) config.version = constants.PG_VERSION
-  if (!config.port) config.port = 5432
-  const { user, pass, bufferSize } = config
-
-  const sock = await connectSocket(config, new ArrayBuffer(bufferSize))
-  sock.authenticated = false
-  sock.config = config
-
-  const size = 4096
-  let head = 0
-  let tail = 0
-  const callbacks = new Array(size)
-  sock.queueSize = () => {
-    if (tail < head) return size - head + tail
-    return tail - head
-  }
-  sock.push = callback => {
-    callbacks[tail] = callback
-    tail = (tail + 1) % size
-  }
-  sock.shift = () => {
-    const callback = callbacks[head]
-    head = (head + 1) % size
-    return callback
+class Query {
+  constructor (query, sock) {
+    this.query = query
+    this.buffer = sock.buffer
+    this.parser = sock.parser
+    this.htmlEscape = html.escape
+    this.protocol = new Protocol(this.buffer, query)
+    this.sync = query.sync
   }
 
-  const actions = {}
-
-  actions[NoticeResponse] = () => {
-    if (sock.onNotice) sock.onNotice(sock.parser.notice)
-  }
-  actions[NotificationResponse] = () => {
-    if (sock.onNotify) sock.onNotify(sock.parser.notification)
-  }
-  actions[BackendKeyData] = () => {}
-  actions[ParseComplete] = () => {}
-  actions[BindComplete] = () => {}
-  actions[CloseComplete] = () => sock.shift()()
-  actions[AuthenticationOk] = () => sock.shift()()
-  actions[NoData] = () => sock.shift()()
-  actions[ErrorResponse] = () => sock.shift()()
-  actions[CommandComplete] = () => sock.shift()()
-  actions[RowDescription] = () => sock.shift()()
-  actions[ReadyForQuery] = () => {
-    if (sock.authenticated) {
-      actions[ReadyForQuery] = () => {}
-      return
+  generate () {
+    const { query } = this
+    const { fields } = query
+    const source = []
+    source.push('  const { parser, htmlEscape } = this')
+    source.push('  const { state, dv, buf, u8 } = parser')
+    source.push('  const { start, rows } = state')
+    source.push('  let off = start + 7')
+    source.push('  let len = 0')
+    source.push('  if (rows === 1) {')
+    for (const field of fields) {
+      const { name, format } = field
+      if (format.oid === INT4OID) {
+        if (format.format === constants.formats.Binary) {
+          source.push(`    const ${name} = dv.getInt32(off + 4)`)
+          source.push('    off += 8')
+        } else {
+          source.push('    len = dv.getUint32(off)')
+          source.push('    off += 4')
+          source.push(`    const ${name} = parseInt(buf.readString(len, off), 10)`)
+          source.push('    off += len')
+        }
+      } else if (format.oid === VARCHAROID) {
+        source.push('    len = dv.getUint32(off)')
+        source.push('    off += 4')
+        if (format.format === constants.formats.Binary) {
+          source.push(`    const ${name} = buf.slice(off, off + len)`)
+        } else {
+          source.push(`    const ${name} = buf.readString(len, off)`)
+        }
+        source.push('    off += len')
+      }
     }
-    sock.authenticated = true
-    sock.shift()()
+    source.push(`    return { ${fields.map(f => f.name).join(', ')} }`)
+    source.push('  }')
+    source.push('  const result = []')
+    source.push('  off = start + 7')
+    source.push('  for (let i = 0; i < rows; i++) {')
+    for (const field of fields) {
+      const { name, format } = field
+      if (format.oid === INT4OID) {
+        if (format.format === constants.formats.Binary) {
+          source.push(`    const ${name} = dv.getInt32(off + 4)`)
+          source.push('    off += 8')
+        } else {
+          source.push('    len = dv.getInt32(off)')
+          source.push('    off += 4')
+          source.push(`    const ${name} = parseInt(buf.readString(len, off), 10)`)
+          source.push('    off += len')
+        }
+      } else if (format.oid === VARCHAROID) {
+        source.push('    len = dv.getInt32(off)')
+        source.push('    off += 4')
+        if (format.format === constants.formats.Binary) {
+          source.push(`    const ${name} = buf.slice(len, off)`)
+        } else {
+          if (field.htmlEscape) {
+            source.push(`    const ${name} = htmlEscape(buf, len, off)`)
+          } else {
+            source.push(`    const ${name} = buf.readString(len, off)`)
+          }
+        }
+        source.push('    off += len')
+      }
+    }
+    source.push('    if (u8[off] === 84) {')
+    source.push('      len = dv.getUint32(off + 1)')
+    source.push('      off += len')
+    source.push('    }')
+    source.push(`    result.push({ ${fields.map(f => f.name).join(', ')} })`)
+    source.push('    off += 7')
+    source.push('  }')
+    source.push('  return result')
+    const read = source.join('\n').trim()
+    if (read.length) this.read = just.vm.compile(read, `${query.name}r.js`, [], [])
+    return this
   }
-
-  const parser = createParser(sock.buffer)
-  parser.onMessage = () => actions[parser.type]()
-
-  sock.compile = async (config, batchSize = 1) => {
-    const query = Object.assign({}, config)
-    if (!query.portal) query.portal = ''
-    query.params = Array(config.params || 0).fill(0)
-    if (!query.fields) query.fields = []
-    if (!query.formats) query.formats = []
-    if (!query.maxRows) query.maxRows = 0
-    const batch = new Query(sock, query, batchSize)
-    await batch.setup().create()
-    return batch.generate().compile()
-  }
-  sock.onData = bytes => parser.parse(bytes)
-  sock.parser = parser
-  const salt = await start(sock, config, parser)
-  await authenticate(sock, user, pass, salt)
-  return sock
 }
 
-function connect (config, poolSize = 1) {
-  const connections = []
-  for (let i = 0; i < poolSize; i++) {
-    connections.push(createConnection(config))
+class RingBuffer {
+  constructor () {
+    this.rb = new Array(65536)
+    this.head = new Uint16Array(1)
+    this.tail = new Uint16Array(1)
+    this.length = 0
   }
-  return Promise.all(connections)
+
+  at (index) {
+    return this.rb[this.head[0] + index]
+  }
+
+  push (fn) {
+    if (this.length === 65536) this.shift()
+    this.rb[this.tail[0]++] = fn
+    this.length++
+  }
+
+  shift () {
+    this.length--
+    return this.rb[this.head[0]++]
+  }
 }
 
-/**
- * Generate a Bulk Update SQL statement definition which can be passed to
- * sock.create. For a given table, identity column and column to be updated, it
- * will generate a single SQL statement to update all fields in one statement
- *
- * @param {string} table   - The name of the table
- * @param {string} field   - The name of the field we want to update
- * @param {string} id      - The name of the id field
- * @param {string} updates - The number of rows to update in the statement
- * @param {string} type    - The name of the table
- */
-function generateBulkUpdate (table, field, id, updates = 5, type = constants.BinaryInt) {
-  function getIds (count) {
-    const updates = []
-    for (let i = 1; i < (count * 2); i += 2) {
-      updates.push(`$${i}`)
-    }
-    return updates.join(',')
+class PGCommand {
+  constructor (query, resolve, reject, args = [], type = 'exec') {
+    this.query = query
+    this.type = type
+    this.resolve = resolve
+    this.reject = reject
+    this.args = args
+    this.sync = false
+    this.batchMode = false
   }
-  function getClauses (count) {
-    const clauses = []
-    for (let i = 1; i < (count * 2); i += 2) {
-      clauses.push(`when $${i} then $${i + 1}`)
-    }
-    return clauses.join('\n')
-  }
-  const formats = [type]
-  const sql = []
-  sql.push(`update ${table} set ${field} = CASE ${id}`)
-  sql.push(getClauses(updates))
-  sql.push(`else ${field}`)
-  sql.push(`end where ${id} in (${getIds(updates)})`)
-  return { formats, name: `${updates}`, params: updates * 2, sql: sql.join('\n') }
 }
 
-module.exports = { constants, connect, generateBulkUpdate, createParser }
+const commandCache = new RingBuffer()
+
+function getCommand (query, resolve, reject, args) {
+  if (commandCache.length) {
+    const cmd = commandCache.shift()
+    cmd.query = query
+    cmd.resolve = resolve
+    cmd.reject = reject
+    cmd.args = args
+    return cmd
+  }
+  return new PGCommand(query, resolve, reject, args)
+}
+
+class PGSocket {
+  constructor (sock, db) {
+    this.sock = sock
+    this.db = db
+    this.off = 0
+    sock.edgeTriggered = false
+    const parser = this.parser = createParser(sock.buffer)
+    const pending = this.pending = new RingBuffer()
+    this.buffer = new ArrayBuffer(64 * 1024)
+    this.protocol = new Protocol(this.buffer, db)
+    this.len = this.buffer.byteLength
+    this.flushing = false
+    parser.onErrorResponse = () => {
+      while (pending.length && !pending.at(0).sync) {
+        const cmd = pending.shift()
+        cmd.reject(createError(parser.errors))
+        commandCache.push(cmd)
+      }
+      if (pending.length) {
+        const cmd = pending.shift()
+        cmd.reject(createError(parser.errors))
+        commandCache.push(cmd)
+      }
+    }
+    parser.onBackendKeyData = () => {
+      const cmd = pending.shift()
+      cmd.resolve()
+      commandCache.push(cmd)
+    }
+    parser.onAuthenticationOk = () => {
+      const cmd = pending.shift()
+      cmd.resolve()
+      commandCache.push(cmd)
+    }
+    parser.onParseComplete = () => {
+      const cmd = pending.shift()
+      const { query, resolve } = cmd
+      resolve(this.wrap(query.generate()))
+      commandCache.push(cmd)
+    }
+    parser.onCommandComplete = () => {
+      const cmd = pending.shift()
+      const { query, resolve } = cmd
+      resolve(query.read())
+      commandCache.push(cmd)
+    }
+  }
+
+  compile (config) {
+    const { pending } = this
+    const query = new Query(config, this)
+    const { protocol } = query
+    return new Promise((resolve, reject) => {
+      this.off = protocol.parse(this.off)
+      this.off = protocol.describe(this.off)
+      this.off = protocol.flush(this.off)
+      pending.push(getCommand(query, resolve, reject, []))
+      this.flush()
+    })
+  }
+
+  flush (sync = false) {
+    if (this.flushing || this.off === 0) return 0
+    const { sock, protocol } = this
+    this.flushing = true
+    if (sync) this.off = protocol.sync(this.off)
+    const written = sock.send(this.buffer, this.off, 0)
+    if (written === this.off) {
+      this.off = 0
+      this.flushing = false
+      return written
+    }
+    if (written === 0) {
+      this.flushing = false
+      sock.close()
+      return -1
+    }
+    if (written < this.off || (written < 0 && sock.blocked)) {
+      just.print(`len ${this.off} written ${written}`)
+      if (written > 0) {
+        this.buffer.copyFrom(this.buffer, 0, this.off - written, written)
+        this.off = this.off - written
+      }
+      sock.onWritable = () => {
+        just.print('writable again, flushing...')
+        sock.resume()
+        this.flushing = false
+        this.flush(sync)
+      }
+      sock.pause()
+      return 0
+    }
+    this.flushing = false
+    sock.close()
+    return -2
+  }
+
+  wrap (query) {
+    const { pending, batchMode } = this
+    const { protocol, sync } = query
+    return (...args) => new Promise((resolve, reject) => {
+      if (!pending.length) {
+        protocol.params = args
+        const cmd = getCommand(query, resolve, reject, args)
+        cmd.sync = true
+        pending.push(cmd)
+        this.off = protocol.bind(this.off)
+        this.off = protocol.exec(this.off)
+        this.off = protocol.sync(this.off)
+        this.flush()
+        return
+      }
+      protocol.params = args
+      this.off = protocol.bind(this.off)
+      this.off = protocol.exec(this.off)
+      const cmd = getCommand(query, resolve, reject, args)
+      if (!batchMode || sync) {
+        this.off = protocol.sync(this.off)
+        cmd.sync = true
+      } else {
+        cmd.sync = false
+      }
+      pending.push(cmd)
+    })
+  }
+
+  login () {
+    const { db, parser, pending, protocol } = this
+    return new Promise((resolve, reject) => {
+      db.salt = parser.salt
+      this.off = protocol.md5auth(this.off)
+      pending.push(getCommand({}, resolve, reject))
+      this.flush()
+    })
+  }
+
+  start () {
+    const { sock, parser, pending, protocol } = this
+    sock.onReadable = () => {
+      this.flush(true)
+      const bytes = sock.recv(sock.buffer.offset)
+      if (bytes > 0) return parser.parse(bytes)
+      if (bytes === 0 || !sock.blocked) sock.close()
+    }
+    return new Promise((resolve, reject) => {
+      this.off = protocol.startup(this.off)
+      pending.push(getCommand({}, resolve, reject))
+      sock.resume()
+      this.flush()
+    })
+  }
+
+  stop () {
+    const { sock } = this
+    sock.pause()
+    sock.onReadable = () => {}
+  }
+
+  close () {
+    return this.sock.close()
+  }
+}
+
+async function createSocket (sock, db) {
+  const pgsocket = new PGSocket(sock, db)
+  await pgsocket.start()
+  await pgsocket.login()
+  return pgsocket
+}
+
+function createRingBuffer () {
+  return new RingBuffer()
+}
+
+module.exports = {
+  constants,
+  Protocol,
+  PGError,
+  PGCommand,
+  RingBuffer,
+  Query,
+  createParser,
+  createSocket,
+  createRingBuffer
+}

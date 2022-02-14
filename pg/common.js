@@ -204,11 +204,10 @@ const constants = {
   PG_VERSION: 0x00030000
 }
 
-const messageNames = {}
+constants.messageNames = {}
 Object.keys(constants.messageTypes).forEach(k => {
-  messageNames[constants.messageTypes[k]] = k
+  constants.messageNames[constants.messageTypes[k]] = k
 })
-constants.messageNames = messageNames
 
 constants.BinaryInt = {
   format: constants.formats.Binary,

@@ -6,6 +6,7 @@ class Parser {
     this.pos = 0
     this.header = true
     this.buf = buffer
+    buffer.offset = 0
     const dv = new DataView(buffer)
     const u8 = new Uint8Array(buffer)
     this.dv = dv
@@ -34,7 +35,7 @@ class Parser {
         if (method === constants.AuthenticationMD5Password) {
           parser.salt = buffer.slice(off, off + 4)
           off += 4
-          parser.onMessage()
+          parser.onAuthenticationOk()
         }
         return off
       },
@@ -48,7 +49,7 @@ class Parser {
         notification.message = readCString(u8, off)
         off += notification.message.length + 1
         parser.notification = notification
-        parser.onMessage()
+        parser.onNotificationResponse()
         parser.notification = {}
         return off
       },
@@ -63,7 +64,7 @@ class Parser {
           fieldType = u8[off++]
         }
         parser.notice = notice
-        parser.onMessage()
+        parser.onNoticeResponse()
         parser.notice = {}
         return off
       },
@@ -77,7 +78,7 @@ class Parser {
           off += (val.length + 1)
           fieldType = u8[off++]
         }
-        parser.onMessage()
+        parser.onErrorResponse()
         return off
       },
       [messageTypes.RowDescription]: (len, off) => {
@@ -102,7 +103,7 @@ class Parser {
           off += 2
           fields.push({ name, tid, attrib, oid, size, mod, format })
         }
-        parser.onMessage()
+        parser.onRowDescription()
         return off
       },
       [messageTypes.CommandComplete]: (len, off) => {
@@ -112,24 +113,24 @@ class Parser {
         state.running = false
         off += len - 4
         parser.nextRow = 0
-        parser.onMessage()
+        parser.onCommandComplete()
         return off
       },
       [messageTypes.CloseComplete]: (len, off) => {
         // 3 = CloseComplete
-        parser.onMessage()
+        parser.onCloseComplete()
         return off + len - 4
       },
       [messageTypes.ParseComplete]: (len, off) => {
         // 1 = ParseComplete
         off += len - 4
-        parser.onMessage()
+        parser.onParseComplete()
         return off
       },
       [messageTypes.BindComplete]: (len, off) => {
         // 2 = BindComplete
         off += len - 4
-        parser.onMessage()
+        parser.onBindComplete()
         state.rows = 0
         state.start = off
         state.running = true
@@ -138,7 +139,7 @@ class Parser {
       [messageTypes.ReadyForQuery]: (len, off) => {
         // Z = ReadyForQuery
         parser.status = u8[off]
-        parser.onMessage()
+        parser.onReadyForQuery()
         off += len - 4
         return off
       },
@@ -148,7 +149,7 @@ class Parser {
         off += 4
         parser.key = dv.getUint32(off)
         off += 4
-        parser.onMessage()
+        parser.onBackendKeyData()
         return off
       },
       [messageTypes.ParameterStatus]: (len, off) => {
@@ -179,7 +180,6 @@ class Parser {
       },
       0: (len, off) => {
         off += len - 4
-        parser.onMessage()
         return off
       }
     }
@@ -242,6 +242,18 @@ class Parser {
     state.start = state.end = state.rows = 0
     state.running = false
   }
+
+  onAuthenticationOk () {}
+  onNotificationResponse () {}
+  onNoticeResponse () {}
+  onErrorResponse () {}
+  onRowDescription () {}
+  onCommandComplete () {}
+  onCloseComplete () {}
+  onParseComplete () {}
+  onBindComplete () {}
+  onReadyForQuery () {}
+  onBackendKeyData () {}
 }
 
 function createParser (buf) {
