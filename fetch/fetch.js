@@ -4,7 +4,7 @@ const { tls } = just.library('tls', 'openssl.so')
 const { epoll } = just.library('epoll')
 const { http } = just.library('http')
 
-const dns = require('../dns/dns.js')
+const dns = require('@dns')
 
 const {
   getResponses,
