@@ -350,7 +350,7 @@ class PGCommand {
     this.reject = reject
     this.args = args
     this.sync = false
-    this.batchMode = false
+    this.pipeline = false
   }
 }
 
@@ -466,7 +466,7 @@ class PGSocket {
   }
 
   wrap (query) {
-    const { pending, batchMode } = this
+    const { pending, pipeline } = this
     const { protocol, sync } = query
     return (...args) => new Promise((resolve, reject) => {
       if (!pending.length) {
@@ -484,7 +484,7 @@ class PGSocket {
       this.off = protocol.bind(this.off)
       this.off = protocol.exec(this.off)
       const cmd = getCommand(query, resolve, reject, args)
-      if (!batchMode || sync) {
+      if (!pipeline || sync) {
         this.off = protocol.sync(this.off)
         cmd.sync = true
       } else {

@@ -34,7 +34,7 @@ const {
 const { loop } = just.factory
 
 const socketMap = new Map()
-const dnsMap = new Map()
+const { getIPAddress } = dns
 
 function parseUrl (url) {
   const protocolEnd = url.indexOf(':')
@@ -45,23 +45,6 @@ function parseUrl (url) {
   const [hostname, port] = host.split(':')
   if (port) return { protocol, host, hostname, path, port }
   return { protocol, host, hostname, path, port: protocol === 'https' ? 443 : 80 }
-}
-
-function getIPAddress (hostname, callback) {
-  return new Promise((resolve, reject) => {
-    if (dnsMap.has(hostname)) {
-      resolve(dnsMap.get(hostname))
-      return
-    }
-    dns.lookup(hostname, (err, ip) => {
-      if (err) {
-        reject(err)
-        return
-      }
-      dnsMap.set(hostname, ip)
-      resolve(ip)
-    })
-  })
 }
 
 function acquireSocket (ip, port) {
