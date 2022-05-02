@@ -1,4 +1,12 @@
 const { sqlite } = just.library('sqlite')
+const { sha1 } = just.library('sha1')
+const { encode } = just.library('encode')
+
+function hash (str) {
+  const source = ArrayBuffer.fromString(str)
+  const dest = new ArrayBuffer(20)
+  return source.readString(encode.base64Encode(dest, source, sha1.hash(source, dest))).replace(/\+/g, '-').replace(/\//g, '_')
+}
 
 const checkpoint = {
   SQLITE_CHECKPOINT_PASSIVE:  0,
@@ -8,16 +16,28 @@ const checkpoint = {
 }
 
 const v2 = {
-  SQLITE_OPEN_READONLY:         0x00000001,
-  SQLITE_OPEN_READWRITE:        0x00000002,
-  SQLITE_OPEN_CREATE:           0x00000004,
-  SQLITE_OPEN_URI:              0x00000040,
-  SQLITE_OPEN_MEMORY:           0x00000080,
-  SQLITE_OPEN_NOMUTEX:          0x00008000,
-  SQLITE_OPEN_FULLMUTEX:        0x00010000,
-  SQLITE_OPEN_SHAREDCACHE:      0x00020000,
-  SQLITE_OPEN_PRIVATECACHE:     0x00040000,
-  SQLITE_OPEN_NOFOLLOW:         0x01000000
+  SQLITE_OPEN_READONLY        : 0x00000001,  /* Ok for sqlite3_open_v2() */
+  SQLITE_OPEN_READWRITE       : 0x00000002,  /* Ok for sqlite3_open_v2() */
+  SQLITE_OPEN_CREATE          : 0x00000004,  /* Ok for sqlite3_open_v2() */
+  SQLITE_OPEN_DELETEONCLOSE   : 0x00000008,  /* VFS only */
+  SQLITE_OPEN_EXCLUSIVE       : 0x00000010,  /* VFS only */
+  SQLITE_OPEN_AUTOPROXY       : 0x00000020,  /* VFS only */
+  SQLITE_OPEN_URI             : 0x00000040,  /* Ok for sqlite3_open_v2() */
+  SQLITE_OPEN_MEMORY          : 0x00000080,  /* Ok for sqlite3_open_v2() */
+  SQLITE_OPEN_MAIN_DB         : 0x00000100,  /* VFS only */
+  SQLITE_OPEN_TEMP_DB         : 0x00000200,  /* VFS only */
+  SQLITE_OPEN_TRANSIENT_DB    : 0x00000400,  /* VFS only */
+  SQLITE_OPEN_MAIN_JOURNAL    : 0x00000800,  /* VFS only */
+  SQLITE_OPEN_TEMP_JOURNAL    : 0x00001000,  /* VFS only */
+  SQLITE_OPEN_SUBJOURNAL      : 0x00002000,  /* VFS only */
+  SQLITE_OPEN_SUPER_JOURNAL   : 0x00004000,  /* VFS only */
+  SQLITE_OPEN_NOMUTEX         : 0x00008000,  /* Ok for sqlite3_open_v2() */
+  SQLITE_OPEN_FULLMUTEX       : 0x00010000,  /* Ok for sqlite3_open_v2() */
+  SQLITE_OPEN_SHAREDCACHE     : 0x00020000,  /* Ok for sqlite3_open_v2() */
+  SQLITE_OPEN_PRIVATECACHE    : 0x00040000,  /* Ok for sqlite3_open_v2() */
+  SQLITE_OPEN_WAL             : 0x00080000,  /* VFS only */
+  SQLITE_OPEN_NOFOLLOW        : 0x01000000,  /* Ok for sqlite3_open_v2() */
+  SQLITE_OPEN_EXRESCODE       : 0x02000000  /* Extended result codes */
 }
 
 const constants = {
@@ -62,7 +82,41 @@ const fieldTypes = {
   SQLITE_FLOAT      : 2,
   SQLITE_TEXT       : 3,
   SQLITE_BLOB       : 4,
-  SQLITE_NULL       : 5
+  SQLITE_NULL       : 5,
+  SQLITE_INT64      : 6
+}
+constants.fieldTypes = fieldTypes
+
+function getType (type, i) {
+  if (type === fieldTypes.SQLITE_INTEGER) {
+    return `sqlite.columnInt(stmt, ${i})`
+  } else if (type === fieldTypes.SQLITE_INT64) {
+    return `sqlite.columnInt64(stmt, ${i})`
+  } else if (type === fieldTypes.SQLITE_FLOAT) {
+    return `sqlite.columnDouble(stmt, ${i})`
+  } else if (type === fieldTypes.SQLITE_NULL) {
+    return `sqlite.columnText(stmt, ${i})`
+  } else if (type === fieldTypes.SQLITE_TEXT) {
+    return `sqlite.columnText(stmt, ${i})`
+  } else {
+    return `null`
+  }
+}
+
+function getDefault (type) {
+  if (type === fieldTypes.SQLITE_INTEGER) {
+    return '0'
+  } else if (type === fieldTypes.SQLITE_INT64) {
+    return '0n'
+  } else if (type === fieldTypes.SQLITE_FLOAT) {
+    return '0.0'
+  } else if (type === fieldTypes.SQLITE_NULL) {
+    return '\'\''
+  } else if (type === fieldTypes.SQLITE_TEXT) {
+    return '\'\''
+  } else {
+    return `null`
+  }
 }
 
 class Query {
@@ -70,11 +124,23 @@ class Query {
     this.db = db
     this.sql = sql
     this.stmt = null
-    this.fields = []
+    this.params = []
+    this.types = []
+    this.names = []
+    this.count = 0
   }
 
-  prepare (fields = []) {
-    this.fields = fields
+  prepare (fields = [], params = []) {
+    if (fields.length) {
+      this.types.length = 0
+      this.names.length = 0
+    }
+    for (const field of fields) {
+      const { name, type } = field
+      this.types.push(type)
+      this.names.push(name)
+    }
+    this.params = params
     const { db } = this.db
     this.stmt = sqlite.prepare(db, this.sql)
     if (!this.stmt) throw new Error(sqlite.error(db))
@@ -85,43 +151,159 @@ class Query {
     sqlite.finalize(this.stmt)
   }
 
-  exec (...values) {
-    const { fields, stmt } = this
-    const { db } = this.db
+  compile () {
+    const { types, names, params } = this
+    const source = []
+    source.push(`const { db, stmt, rows } = this`)
     let i = 0
-    for (const field of fields) {
-      if (field === 'text') {
+    for (const param of params) {
+      if (param === fieldTypes.SQLITE_TEXT) {
+        source.push(`if (sqlite.bindText(stmt, ${i + 1}, values[${i}]) !== constants.SQLITE_OK) throw new Error(sqlite.error(db))`)
+      } else if (param === fieldTypes.SQLITE_INTEGER) {
+        source.push(`if (sqlite.bindInt(stmt, ${i + 1}, values[${i}]) !== constants.SQLITE_OK) throw new Error(sqlite.error(db))`)
+      } else if (param === fieldTypes.SQLITE_FLOAT) {
+        source.push(`if (sqlite.bindDouble(stmt, ${i + 1}, values[${i}]) !== constants.SQLITE_OK) throw new Error(sqlite.error(db))`)
+      } else if (param === fieldTypes.SQLITE_INT64) {
+        source.push(`if (sqlite.bindInt64(stmt, ${i + 1}, values[${i}]) !== constants.SQLITE_OK) throw new Error(sqlite.error(db))`)
+      }
+      i++
+    }
+    source.push(`
+let ok = sqlite.step(stmt)
+let count = 0
+while (ok === constants.SQLITE_ROW) {`)
+    source.push('    const row = rows[count]')
+    for (let i = 0; i < types.length; i++) {
+      source.push(`    row.${names[i]} = ${getType(types[i], i)}`)
+    }
+    source.push(`    ok = sqlite.step(stmt)
+    count++
+}
+if (ok !== constants.SQLITE_DONE) {
+  just.error(sqlite.error(db))
+}
+if (ok !== constants.SQLITE_OK && ok !== constants.SQLITE_DONE) {
+  throw new Error(sqlite.error(db))
+}
+this.count = count
+sqlite.reset(stmt)
+return rows`)
+    const text = source.join('\n').trim()
+    this.name = `${hash(this.sql)}.sql.js`
+    this.exec = just.vm.compile(text, this.name, [], [])
+    source.length = 0
+    source.push(`
+class Row {
+  constructor () {`)
+    i = 0
+    for (const name of names) {
+      source.push(`    this.${name} = ${getDefault(types[i++])}`)
+    }
+    source.push(`  }
+}
+return Row
+    `)
+    const Row = (just.vm.compile(source.join('\n'), `${hash(this.sql)}.class.sql.js`, [], []))()
+    this.rows = new Array(1000).fill(0).map(v => new Row())
+    this.Row = Row
+    return this
+  }
+/*
+  compile () {
+    const { types, names, params } = this
+    const source = []
+    source.push(`const { db, stmt } = this`)
+    let i = 0
+    for (const param of params) {
+      if (param === fieldTypes.SQLITE_TEXT) {
+        source.push(`if (sqlite.bindText(stmt, ${i + 1}, values[${i}]) !== constants.SQLITE_OK) throw new Error(sqlite.error(db))`)
+      } else if (param === fieldTypes.SQLITE_INTEGER) {
+        source.push(`if (sqlite.bindInt(stmt, ${i + 1}, values[${i}]) !== constants.SQLITE_OK) throw new Error(sqlite.error(db))`)
+      } else if (param === fieldTypes.SQLITE_FLOAT) {
+        source.push(`if (sqlite.bindDouble(stmt, ${i + 1}, values[${i}]) !== constants.SQLITE_OK) throw new Error(sqlite.error(db))`)
+      } else if (param === fieldTypes.SQLITE_INT64) {
+        source.push(`if (sqlite.bindInt64(stmt, ${i + 1}, values[${i}]) !== constants.SQLITE_OK) throw new Error(sqlite.error(db))`)
+      }
+      i++
+    }
+    source.push(`
+let ok = sqlite.step(stmt)
+const rows = []
+let count = 0
+while (ok === constants.SQLITE_ROW) {
+  const row = {}`)
+    for (let i = 0; i < types.length; i++) {
+      if (types[i] === fieldTypes.SQLITE_INTEGER) {
+        source.push(`  row.${names[i]} = sqlite.columnInt(stmt, ${i})`)
+      } else if (types[i] === fieldTypes.SQLITE_INT64) {
+        source.push(`  row.${names[i]} = sqlite.columnInt64(stmt, ${i})`)
+      } else if (types[i] === fieldTypes.SQLITE_FLOAT) {
+        source.push(`  row.${names[i]} = sqlite.columnDouble(stmt, ${i})`)
+      } else if (types[i] === fieldTypes.SQLITE_NULL) {
+        source.push(`  row.${names[i]} = sqlite.columnText(stmt, ${i})`)
+      } else if (types[i] === fieldTypes.SQLITE_TEXT) {
+        source.push(`  row.${names[i]} = sqlite.columnText(stmt, ${i})`)
+      } else {
+        source.push(`  row.${names[i]} = null`)
+      }
+    }
+    source.push(`  count++
+  rows.push(row)
+  ok = sqlite.step(stmt)
+}
+if (ok !== constants.SQLITE_DONE) {
+  just.error(sqlite.error(db))
+}
+if (ok !== constants.SQLITE_OK && ok !== constants.SQLITE_DONE) {
+  throw new Error(sqlite.error(db))
+}
+this.count = count
+sqlite.reset(stmt)
+return rows`)
+    just.print(source.join('\n'))
+    const text = source.join('\n').trim()
+    just.print(`${hash(this.sql)}.sql.js`)
+    this.exec = just.vm.compile(text, `${hash(this.sql)}.sql.js`, [], [])
+  }
+*/
+  exec (...values) {
+    const { params, stmt, types, names } = this
+    const { db } = this.db
+
+    let i = 0
+    for (const param of params) {
+      if (param === fieldTypes.SQLITE_TEXT) {
         if (sqlite.bindText(stmt, i + 1, values[i]) !== constants.SQLITE_OK) throw new Error(sqlite.error(db))
-      } else if (field === 'int') {
+      } else if (param === fieldTypes.SQLITE_INTEGER) {
         if (sqlite.bindInt(stmt, i + 1, Number(values[i])) !== constants.SQLITE_OK) throw new Error(sqlite.error(db))
-      } else if (field === 'double') {
+      } else if (param === fieldTypes.SQLITE_FLOAT) {
         if (sqlite.bindDouble(stmt, i + 1, Number(values[i])) !== constants.SQLITE_OK) throw new Error(sqlite.error(db))
-      } else if (field === 'int64') {
+      } else if (param === fieldTypes.SQLITE_INT64) {
         if (sqlite.bindInt64(stmt, i + 1, BigInt(values[i])) !== constants.SQLITE_OK) throw new Error(sqlite.error(db))
       }
       i++
     }
     const rows = []
-
-    const columns = sqlite.columnCount(stmt)
-    const types = []
-    const names = []
-    for (let i = 0; i < columns; i++) {
-      const type = sqlite.columnType(stmt, i)
-      types.push(type)
-      const name = sqlite.columnName(stmt, i)
-      names.push(name)
-    }
-
+    let count = 0
     let ok = sqlite.step(stmt)
-
+    if (!types.length) {
+      const columns = sqlite.columnCount(stmt)
+      for (let i = 0; i < columns; i++) {
+        const type = sqlite.columnType(stmt, i)
+        types.push(type)
+        const name = sqlite.columnName(stmt, i)
+        names.push(name)
+      }
+    }
     while (ok === constants.SQLITE_ROW) {
       const row = {}
       for (let i = 0; i < types.length; i++) {
         if (types[i] === fieldTypes.SQLITE_INTEGER) {
-          row[names[i]] = parseInt(sqlite.columnText(stmt, i), 10)
+          row[names[i]] = sqlite.columnInt(stmt, i)
+        } else if (types[i] === fieldTypes.SQLITE_INT64) {
+          row[names[i]] = sqlite.columnInt64(stmt, i)
         } else if (types[i] === fieldTypes.SQLITE_FLOAT) {
-          row[names[i]] = parseFloat(sqlite.columnText(stmt, i))
+          row[names[i]] = sqlite.columnDouble(stmt, i)
         } else if (types[i] === fieldTypes.SQLITE_NULL) {
           row[names[i]] = sqlite.columnText(stmt, i)
         } else if (types[i] === fieldTypes.SQLITE_TEXT) {
@@ -130,6 +312,7 @@ class Query {
           row[names[i]] = null
         }
       }
+      count++
       rows.push(row)
       ok = sqlite.step(stmt)
     }
@@ -139,6 +322,7 @@ class Query {
     if (ok !== constants.SQLITE_OK && ok !== constants.SQLITE_DONE) {
       throw new Error(sqlite.error(db))
     }
+    this.count = count
     sqlite.reset(stmt)
     return rows
   }
@@ -170,95 +354,32 @@ class Database {
     return new Query(this, sql)
   }
 
-  execAsync (sql, callback = () => {}) {
-    const { db } = this
-    const ok = sqlite.exec(db, sql)
-  }
-
   checkpoint (mode) {
     return sqlite.checkpoint(this.db, mode)
   }
 
-  exec (sql) {
-    const { db } = this
-    const stmt = sqlite.prepare(db, sql)
-    if (!stmt) {
-      just.error(sqlite.error(db))
-      return
-    }
-    const columns = sqlite.columnCount(stmt)
-    const types = []
-    const names = []
-    for (let i = 0; i < columns; i++) {
-      const type = sqlite.columnType(stmt, i)
-      types.push(type)
-      const name = sqlite.columnName(stmt, i)
-      names.push(name)
-    }
-    const rows = []
-    let ok = sqlite.step(stmt)
-    while (ok === constants.SQLITE_ROW) {
-      const row = {}
-      for (let i = 0; i < types.length; i++) {
-        if (types[i] === fieldTypes.SQLITE_INTEGER) {
-          row[names[i]] = parseInt(sqlite.columnText(stmt, i), 10)
-        } else if (types[i] === fieldTypes.SQLITE_FLOAT) {
-          row[names[i]] = parseFloat(sqlite.columnText(stmt, i))
-        } else if (types[i] === fieldTypes.SQLITE_NULL) {
-          row[names[i]] = sqlite.columnText(stmt, i)
-        } else if (types[i] === fieldTypes.SQLITE_TEXT) {
-          row[names[i]] = sqlite.columnText(stmt, i)
-        } else {
-          row[names[i]] = null
-        }
-      }
-      rows.push(row)
-      ok = sqlite.step(stmt)
-    }
-    if (ok !== constants.SQLITE_DONE) {
-      just.error(sqlite.error(db))
-    }
-    ok = sqlite.finalize(stmt)
-    if (ok !== constants.SQLITE_OK) {
-      just.error(sqlite.error(db))
-    }
-    return rows
+  exec (sql, fields = []) {
+    return new Query(this, sql).prepare(fields).exec()
   }
 
   schema () {
-    const { db } = this
-    const stmt = sqlite.prepare(db, 'SELECT * FROM sqlite_schema')
-    if (!stmt) throw new Error(sqlite.error(db))
-    let ok = sqlite.step(stmt)
-    const tables = []
-    while (ok === constants.SQLITE_ROW) {
-      const table = {}
-      table.columns = []
-      table.type = sqlite.columnText(stmt, 0)
-      table.name = sqlite.columnText(stmt, 1)
-      table.tblName = sqlite.columnText(stmt, 2)
-      table.rootPage = parseInt(sqlite.columnText(stmt, 3), 10)
-      table.sql = sqlite.columnText(stmt, 4)
-      const stmt2 = sqlite.prepare(db, `PRAGMA table_info(${table.name})`)
-      if (!stmt2) throw new Error(sqlite.error(db))
-      ok = sqlite.step(stmt2)
-      while (ok === constants.SQLITE_ROW) {
-        const column = {}
-        column.cid = parseInt(sqlite.columnText(stmt2, 0), 10)
-        column.name = sqlite.columnText(stmt2, 1)
-        column.type = sqlite.columnText(stmt2, 2)
-        column.notnull = parseInt(sqlite.columnText(stmt2, 3), 10)
-        column.dfltValue = parseInt(sqlite.columnText(stmt2, 4) || '0', 10)
-        column.pk = parseInt(sqlite.columnText(stmt2, 5), 10)
-        table.columns.push(column)
-        ok = sqlite.step(stmt2)
-      }
-      tables.push(table)
-      ok = sqlite.step(stmt)
+    const tables = this.exec('SELECT * FROM sqlite_schema', [
+      { name: 'type', type: fieldTypes.SQLITE_TEXT },
+      { name: 'name', type: fieldTypes.SQLITE_TEXT },
+      { name: 'tableName', type: fieldTypes.SQLITE_TEXT },
+      { name: 'rootPage', type: fieldTypes.SQLITE_INT64 },
+      { name: 'sql', type: fieldTypes.SQLITE_TEXT },
+    ])
+    for (const table of tables) {
+      table.cols = this.exec(`PRAGMA table_info(${table.name})`, [
+        { name: 'cid', type: fieldTypes.SQLITE_INTEGER },
+        { name: 'name', type: fieldTypes.SQLITE_TEXT },
+        { name: 'type', type: fieldTypes.SQLITE_TEXT },
+        { name: 'notnull', type: fieldTypes.SQLITE_INTEGER },
+        { name: 'default', type: fieldTypes.SQLITE_INTEGER },
+        { name: 'pk', type: fieldTypes.SQLITE_INTEGER }
+      ])
     }
-    if (ok !== constants.SQLITE_DONE) throw new Error(sqlite.error(db))
-    ok = sqlite.finalize(stmt)
-    if (ok !== constants.SQLITE_OK) throw new Error(sqlite.error(db))
     return tables
   }
 
