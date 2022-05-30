@@ -334,6 +334,21 @@ class Database {
     this.db = null
   }
 
+  releaseMemory () {
+    if (!this.db) return
+    return sqlite.releaseDBMemory(this.db)
+  }
+
+  errorCode () {
+    if (!this.db) return
+    return sqlite.errCode(this.db)
+  }
+
+  errorMessage () {
+    if (!this.db) return
+    return sqlite.errMessage(this.db)
+  }
+
   open (flags, vfs) {
     let db
     if (flags) {
@@ -359,7 +374,10 @@ class Database {
   }
 
   exec (sql, fields = []) {
-    return new Query(this, sql).prepare(fields).exec()
+    const query = new Query(this, sql).prepare(fields)
+    const rows = query.exec()
+    query.close()
+    return rows
   }
 
   schema () {
@@ -408,6 +426,18 @@ function findVFS (vfs) {
   return sqlite.findVFS(vfs)
 }
 
+function memoryUsed () {
+  return sqlite.memoryUsed()
+}
+
+function memoryHighwater () {
+  return sqlite.memoryHighwater()
+}
+
+function releaseMemory () {
+  return sqlite.releaseMemory()
+}
+
 module.exports = {
   constants,
   Database,
@@ -416,5 +446,8 @@ module.exports = {
   shutdown,
   registerVFS,
   unregisterVFS,
-  findVFS
+  findVFS,
+  memoryUsed,
+  memoryHighwater,
+  releaseMemory
 }
