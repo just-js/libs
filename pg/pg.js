@@ -236,7 +236,6 @@ class Query {
     this.parser = sock.parser
     this.htmlEscape = html.escape
     this.protocol = new Protocol(this.buffer, query)
-    this.sync = query.sync
   }
 
   generate () {
@@ -349,8 +348,6 @@ class PGCommand {
     this.resolve = resolve
     this.reject = reject
     this.args = args
-    this.sync = false
-    this.pipeline = false
   }
 }
 
@@ -381,11 +378,6 @@ class PGSocket {
     this.len = this.buffer.byteLength
     this.flushing = false
     parser.onErrorResponse = () => {
-      while (pending.length && !pending.at(0).sync) {
-        const cmd = pending.shift()
-        cmd.reject(createError(parser.errors))
-        commandCache.push(cmd)
-      }
       if (pending.length) {
         const cmd = pending.shift()
         cmd.reject(createError(parser.errors))
@@ -429,13 +421,12 @@ class PGSocket {
     })
   }
 
-  flush (sync = false) {
+  flush () {
     if (this.flushing || this.off === 0) return 0
-    const { sock, protocol } = this
+    const { sock, off } = this
     this.flushing = true
-    if (sync) this.off = protocol.sync(this.off)
     const written = sock.send(this.buffer, this.off, 0)
-    if (written === this.off) {
+    if (written === off) {
       this.off = 0
       this.flushing = false
       return written
@@ -445,17 +436,15 @@ class PGSocket {
       sock.close()
       return -1
     }
-    if (written < this.off || (written < 0 && sock.blocked)) {
-      just.print(`len ${this.off} written ${written}`)
+    if (written < off || (written < 0 && sock.blocked)) {
       if (written > 0) {
-        this.buffer.copyFrom(this.buffer, 0, this.off - written, written)
-        this.off = this.off - written
+        this.buffer.copyFrom(this.buffer, 0, off - written, written)
+        this.off = off - written
       }
       sock.onWritable = () => {
-        just.print('writable again, flushing...')
         sock.resume()
         this.flushing = false
-        this.flush(sync)
+        this.flush()
       }
       sock.pause()
       return 0
@@ -466,30 +455,20 @@ class PGSocket {
   }
 
   wrap (query) {
-    const { pending, pipeline } = this
-    const { protocol, sync } = query
+    const { pending } = this
+    const { protocol } = query
     return (...args) => new Promise((resolve, reject) => {
       if (!pending.length) {
         protocol.params = args
         const cmd = getCommand(query, resolve, reject, args)
-        cmd.sync = true
         pending.push(cmd)
-        this.off = protocol.bind(this.off)
-        this.off = protocol.exec(this.off)
-        this.off = protocol.sync(this.off)
+        this.off = protocol.sync(protocol.exec(protocol.bind(this.off)))
         this.flush()
         return
       }
       protocol.params = args
-      this.off = protocol.bind(this.off)
-      this.off = protocol.exec(this.off)
       const cmd = getCommand(query, resolve, reject, args)
-      if (!pipeline || sync) {
-        this.off = protocol.sync(this.off)
-        cmd.sync = true
-      } else {
-        cmd.sync = false
-      }
+      this.off = protocol.sync(protocol.exec(protocol.bind(this.off)))
       pending.push(cmd)
     })
   }

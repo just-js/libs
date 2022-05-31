@@ -145,9 +145,10 @@ class Socket {
   get blocked () {
     this.error = null
     const err = errno()
-    if (err === EAGAIN) return false
+    // TODO
+    if (err === EAGAIN) return true
     this.error = new SystemError('socket.error')
-    return true
+    return false
   }
 
   negotiate (context = this.context, isClient = this.isClient) {}

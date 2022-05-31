@@ -47,7 +47,7 @@ class HTTPParser {
     const { handle, dv } = this
     this.parseHandle(handle, bytes, off)
     const flags = dv.getUint32(0, true)
-    this.count = flags & 0xff
+    this.count = flags & 0xffff
     this.remaining = flags >> 16
     this.index = 0
     if (this.count > 0) return true
@@ -101,6 +101,23 @@ class OutgoingResponse {
     return this.sock.send(buf)
   }
 
+  header (size, contentType = responses.octet) {
+    const { sock, status, headers } = this
+    if (headers.length) {
+      if (size === 0) {
+        sock.sendString(`${contentType[status].slice(0, -16)}${joinHeaders(headers)}${END}`)
+      } else {
+        sock.sendString(`${contentType[status]}${size}${CRLF}${joinHeaders(headers)}${END}`)
+      }
+    } else {
+      if (size === 0) {
+        sock.sendString(`${contentType[status.slice(0, -16)]}${END}`)
+      } else {
+        sock.sendString(`${contentType[status]}${size}${END}`)
+      }
+    }
+  }
+
   buffer (buf, contentType = responses.octet) {
     const { sock, status, headers } = this
     if (headers.length) {
@@ -144,6 +161,11 @@ class OutgoingResponse {
       return this.sock.sendString(`${contentType[this.status]}${String.byteLength(str)}${CRLF}${joinHeaders(this.headers)}${END}${str}`)
     }
     return this.sock.sendString(`${contentType[this.status]}${String.byteLength(str)}${END}${str}`)
+  }
+
+  notFound () {
+    this.status = 404
+    this.text('Not Found')
   }
 
   text (str, contentType = responses.text) {
@@ -361,109 +383,6 @@ function createResponses (serverName) {
 const random = v => Math.ceil(Math.random() * v)
 const randomSleep = () => new Promise(resolve => just.setTimeout(resolve, random(300) + 20))
 
-async function createServerSocket2 (sock, server) {
-  const { staticHandlers, defaultHandler, hooks } = server
-  const { buffer } = sock
-  if (server.tls) {
-    await sock.negotiate(server.context)
-    if(sock.error) {
-      just.print(sock.error.stack)
-      sock.close()
-      return
-    }
-  }
-  const parser = new HTTPParser(buffer)
-  const chunkParser = new ChunkParser(buffer)
-  let response = new OutgoingResponse(sock)
-  let { request } = response
-  for (const handler of hooks.connect) handler(sock)
-  sock.onClose = () => {
-    for (const handler of hooks.disconnect) handler(sock)
-  }
-  sock.pause()
-  await randomSleep()
-  let inBody = false
-  let off = 0
-  sock.resume()
-  let bytes = await sock.pull()
-  while (bytes > 0) {
-    if (sock.upgraded) {
-      sock.onBytes(bytes)
-      bytes = await sock.pull()
-      continue
-    }
-    if (!inBody) {
-      if (parser.parse(bytes, off)) {
-        const { remaining } = parser
-        response = new OutgoingResponse(sock)
-        request = response.request
-        request.method = getMethod(0)
-        request.url = getUrl(0)
-        const methodHandler = staticHandlers[request.method]
-        if (!methodHandler) {
-          defaultHandler(response, request)
-        } else {
-          const handler = methodHandler[request.url]
-          if (handler) {
-            const promise = handler(response, request)
-            if (handler.opts && handler.opts.async) {
-              promise.catch(err => {
-                just.print(err.stack)
-                server.error(response, err)
-              })
-            }
-          } else {
-            request.parseUrl(true)
-            const handler = methodHandler[request.path]
-            if (handler) {
-              const promise = handler(response, request)
-              if (handler.opts && handler.opts.async) {
-                promise.catch(err => {
-                  just.print(err.stack)
-                  server.error(response, err)
-                })
-              }
-            } else {
-              defaultHandler(response, request)
-            }
-          }
-        }
-        request.contentLength = 0
-        request.bytes = 0
-        if (request.method === methods.post || request.method === methods.put) {
-          request.chunked = request.headers['Transfer-Encoding'] && request.headers['Transfer-Encoding'].toLowerCase() === 'chunked'
-          if (request.chunked) {
-            chunkParser.reset()
-          } else {
-            request.contentLength = parseInt(request.headers['Content-Length'] || request.headers['content-length'], 10)
-          }
-          inBody = true
-          if (remaining > 0) {
-            off = bytes - remaining
-            bytes = remaining
-            continue
-          } else {
-            off = 0
-          }
-        }
-        for (const handler of hooks.post) handler(response, request)
-      } else {
-        just.print('todo')
-      }
-    } else {
-      request.bytes += bytes
-      request.onBody(sock.buffer, bytes, off)
-      if (request.bytes === request.contentLength) {
-        request.onEnd()
-        for (const handler of hooks.post) handler(response, request)
-        inBody = false
-      }
-    }
-    bytes = await sock.pull()
-  }
-  sock.close()
-}
-
 async function createServerSocket (sock, server) {
   const { staticHandlers, defaultHandler, hooks } = server
   const { buffer } = sock
@@ -477,7 +396,6 @@ async function createServerSocket (sock, server) {
   }
   sock.edgeTriggered = false
   const parser = new HTTPParser(buffer)
-  const res = new OutgoingResponse(sock)
   if (hooks.connect.length) {
     for (const handler of hooks.connect) handler(sock)
   }
@@ -496,8 +414,9 @@ async function createServerSocket (sock, server) {
       return
     }
     if (bytes > 0) {
-      if (parser.parse(bytes)) {
+      if (parser.parse(offset + bytes)) {
         const { count } = parser
+        const res = new OutgoingResponse(sock)
         res.pipeline = count > 1
         for (let i = 0; i < count; i++) {
           res.index = i
@@ -533,23 +452,23 @@ async function createServerSocket (sock, server) {
           }
           defaultHandler(res, request)
         }
-        if (parser.remaining > 0) {
-          const { headers, url, path, query, method } = res.request
-          just.print(JSON.stringify({ headers, url, path, query, method }, null, '  '))
-          just.print(`remaining ${parser.remaining}`)
+        const { remaining } = parser
+        if (remaining > 0) {
+          parser.buffer.copyFrom(parser.buffer, 0, remaining, offset + bytes - remaining)
+          offset = remaining
+        } else {
+          //for (const handler of hooks.post) handler(res)
+          offset = 0
         }
         res.finish()
-        for (const handler of hooks.post) handler(res)
-        offset = 0
       } else {
         if (!sock.upgraded) {
-          if (parser.remaining > 0) {
-            const { headers, url, path, query, method } = res.request
-            just.print(JSON.stringify({ headers, url, path, query, method }, null, '  '))
-            just.print(`remaining ${parser.remaining}`)
-            offset = parser.remaining
+          const { remaining } = parser
+          if (remaining > 0) {
+            offset += remaining
+          } else {
+            offset = 0
           }
-          just.print('*** parser false ***')
         }
       }
     } else {
@@ -916,10 +835,11 @@ const statusMessages = {
   429: 'Server Busy',
   500: 'Server Error'
 }
+
 const methods = {
   get: 'GET'.charCodeAt(0),
   put: 'PUT'.charCodeAt(0),
-  post: 'POST'.charCodeAt(0),
+  post: 'POST'.charCodeAt(0), // TODO: PUT and POST are same
   delete: 'DELETE'.charCodeAt(0),
   options: 'OPTIONS'.charCodeAt(0)
 }
@@ -934,7 +854,8 @@ const contentTypes = {
   ico: 'application/favicon',
   png: 'application/png',
   xml: 'application/xml; charset=utf-8',
-  js: 'application/javascript; charset=utf-8'
+  js: 'application/javascript; charset=utf-8',
+  wasm: 'application/wasm'
 }
 
 const responses = {}
