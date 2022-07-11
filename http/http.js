@@ -163,9 +163,25 @@ class OutgoingResponse {
     return this.sock.sendString(`${contentType[this.status]}${String.byteLength(str)}${END}${str}`)
   }
 
+  redirect (location, status = 302) {
+    this.headers.push(['Location', location])
+    this.status = status
+    this.text('')
+  }
+
   notFound () {
     this.status = 404
     this.text('Not Found')
+  }
+
+  forbidden () {
+    this.status = 403
+    this.text('Forbidden')
+  }
+
+  badRequest () {
+    this.status = 400
+    this.text('Bad Request')
   }
 
   text (str, contentType = responses.text) {
@@ -184,6 +200,7 @@ class OutgoingResponse {
       this.sock.sendString(this.queue)
       this.queue = ''
       this.pipeline = false
+      this.headers.length = 0
     }
   }
 }
@@ -460,6 +477,7 @@ async function createServerSocket (sock, server) {
           //for (const handler of hooks.post) handler(res)
           offset = 0
         }
+        // TODO - figure out how to handle this correctly for sync/async - write tests
         res.finish()
       } else {
         if (!sock.upgraded) {
@@ -599,6 +617,12 @@ ${err.stack}
   put (path, handler, opts) {
     if (opts) handler.opts = opts
     this.addPath(path, handler, methods.put)
+    return this
+  }
+
+  head (path, handler, opts) {
+    if (opts) handler.opts = opts
+    this.addPath(path, handler, methods.head)
     return this
   }
 
@@ -828,6 +852,7 @@ const statusMessages = {
   201: 'Created',
   204: 'OK',
   101: 'Switching Protocols',
+  302: 'Redirect',
   400: 'Bad Request',
   401: 'Unauthorized',
   403: 'Forbidden',
@@ -839,6 +864,7 @@ const statusMessages = {
 const methods = {
   get: 'GET'.charCodeAt(0),
   put: 'PUT'.charCodeAt(0),
+  head: 'HEAD'.charCodeAt(0),
   post: 'POST'.charCodeAt(0), // TODO: PUT and POST are same
   delete: 'DELETE'.charCodeAt(0),
   options: 'OPTIONS'.charCodeAt(0)
@@ -877,6 +903,7 @@ module.exports = {
   OutgoingResponse,
   HTTPParser,
   messageTypes,
+  methods,
   contentTypes,
   statusMessages,
   responses,
