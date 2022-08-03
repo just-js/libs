@@ -6,6 +6,8 @@ const { http } = just.library('http')
 
 const dns = require('@dns')
 
+const { SystemError } = just
+
 const {
   getResponses,
   parseResponsesHandle,
@@ -20,7 +22,8 @@ const {
   IPPROTO_TCP,
   TCP_NODELAY,
   SO_KEEPALIVE,
-  EAGAIN
+  EAGAIN,
+  SO_ERROR
 } = net
 
 const {
@@ -265,13 +268,14 @@ class Socket {
     return new Promise((resolve, reject) => {
       loop.add(socket.fd, (fd, event) => {
         if (event & EPOLLERR || event & EPOLLHUP) {
+          const err = net.getsockopt(fd, SOL_SOCKET, SO_ERROR)
           socket.close()
-          reject(new just.SystemError('epoll.error'))
           return
         }
         if (event & EPOLLOUT) {
           if (!resolved) resolve()
           resolved = true
+          loop.update(fd, EPOLLIN)
           return
         }
         reject(new Error('unexpected epoll state'))

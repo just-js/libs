@@ -111,7 +111,7 @@ class OutgoingResponse {
       }
     } else {
       if (size === 0) {
-        sock.sendString(`${contentType[status.slice(0, -16)]}${END}`)
+        sock.sendString(`${contentType[status].slice(0, -16)}${END}`)
       } else {
         sock.sendString(`${contentType[status]}${size}${END}`)
       }
@@ -403,6 +403,15 @@ const randomSleep = () => new Promise(resolve => just.setTimeout(resolve, random
 async function createServerSocket (sock, server) {
   const { staticHandlers, defaultHandler, hooks } = server
   const { buffer } = sock
+  function match (url, method) {
+    for (const handler of server.regexHandlers[method]) {
+      const match = url.match(handler.path)
+      if (match) {
+        return [handler.handler, match.slice(1)]
+      }
+    }
+    return [null, null]
+  }
   if (server.tls) {
     await sock.negotiate(server.context)
     if(sock.error) {
@@ -465,6 +474,12 @@ async function createServerSocket (sock, server) {
             if (handler.opts && handler.opts.async) {
               p.catch(err => server.error(res, err))
             }
+            continue
+          }
+          const [h, params] = match(request.path, request.method)
+          if (h) {
+            request.params = params
+            h(res, request)
             continue
           }
           defaultHandler(res, request)
@@ -851,6 +866,7 @@ const statusMessages = {
   200: 'OK',
   201: 'Created',
   204: 'OK',
+  206: 'Partial Content',
   101: 'Switching Protocols',
   302: 'Redirect',
   400: 'Bad Request',

@@ -25,7 +25,7 @@ const {
   EPOLLET
 } = epoll
 
-const { errno, fcntl, F_GETFL, F_SETFL } = sys
+const { errno, strerror, fcntl, F_GETFL, F_SETFL } = sys
 
 const { loop } = just.factory
 const { SystemError } = just
@@ -183,7 +183,7 @@ class Socket {
         // todo: this will clobber any previous ones
         socket.onWritable = () => {
           socket.onWritable = null
-          sock.writable = true
+          socket.writable = true
           if (bytes > 0) {
             socket.push(buf, len - bytes, bytes).then(resolve).catch(reject)
             return
@@ -205,7 +205,7 @@ class Socket {
       return new Promise((resolve, reject) => {
         socket.onWritable = () => {
           socket.onWritable = null
-          sock.writable = true
+          socket.writable = true
           socket.pushString(str, len).then(resolve).catch(reject)
         }
       })
@@ -253,8 +253,8 @@ class Socket {
     }
     if (!socket.connected) {
       socket.connected = true
-      loop.handles[socket.fd] = (fd, event) => socket.onSocketEvent(event)
-      loop.update(socket.fd, socket.events)
+      loop.remove(socket.fd)
+      loop.add(socket.fd, (fd, event) => socket.onSocketEvent(event), socket.events)
       resolve(socket)
     }
   }

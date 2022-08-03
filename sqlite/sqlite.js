@@ -153,9 +153,9 @@ class Query {
       this.names.push(name)
     }
     this.params = params
-    const { db } = this.db
-    this.stmt = sqlite.prepare(db, this.sql)
-    if (!this.stmt) throw new Error(sqlite.error(db))
+    const { db } = this
+    this.stmt = sqlite.prepare(db.db, this.sql)
+    if (!this.stmt) throw new Error(db.errorCode())
     return this
   }
 
@@ -171,36 +171,36 @@ class Query {
     const fParams = []
     source.push(`const { db, stmt, rows, sqlite, constants } = this`)
     source.push(`  const { SQLITE_OK, SQLITE_ROW, SQLITE_DONE } = constants`)
-    source.push(`  const { error, bindText, bindInt, bindDouble, bindInt64, bindBlob, step, reset } = sqlite\n`)
+    source.push(`  const { bindText, bindInt, bindDouble, bindInt64, bindBlob, step, reset } = sqlite\n`)
     let i = 0
     for (const param of params) {
       if (param.type) {
         fParams.push(param.name)
         const { name, type } = param
         if (type === fieldTypes.SQLITE_TEXT) {
-          source.push(`  if (bindText(stmt, ${i + 1}, ${name}) !== SQLITE_OK) throw new Error(error(db))`)
+          source.push(`  if (bindText(stmt, ${i + 1}, ${name}) !== SQLITE_OK) throw new Error(db.errorMessage())`)
         } else if (type === fieldTypes.SQLITE_INTEGER) {
-          source.push(`  if (bindInt(stmt, ${i + 1}, Number(${name})) !== SQLITE_OK) throw new Error(error(db))`)
+          source.push(`  if (bindInt(stmt, ${i + 1}, Number(${name})) !== SQLITE_OK) throw new Error(db.errorMessage())`)
         } else if (type === fieldTypes.SQLITE_FLOAT) {
-          source.push(`  if (bindDouble(stmt, ${i + 1}, Number(${name})) !== SQLITE_OK) throw new Error(error(db))`)
+          source.push(`  if (bindDouble(stmt, ${i + 1}, Number(${name})) !== SQLITE_OK) throw new Error(db.errorMessage())`)
         } else if (type === fieldTypes.SQLITE_INT64) {
-          source.push(`  if (bindInt64(stmt, ${i + 1}, BigInt(${name})) !== SQLITE_OK) throw new Error(error(db))`)
+          source.push(`  if (bindInt64(stmt, ${i + 1}, BigInt(${name})) !== SQLITE_OK) throw new Error(db.errorMessage())`)
         } else if (type === fieldTypes.SQLITE_BLOB) {
-          source.push(`  if (bindBlob(stmt, ${i + 1}, ${name}) !== SQLITE_OK) throw new Error(error(db))`)
+          source.push(`  if (bindBlob(stmt, ${i + 1}, ${name}) !== SQLITE_OK) throw new Error(db.errorMessage())`)
         }
         i++
         continue
       }
       if (param === fieldTypes.SQLITE_TEXT) {
-        source.push(`  if (bindText(stmt, ${i + 1}, arguments[${i}]) !== SQLITE_OK) throw new Error(error(db))`)
+        source.push(`  if (bindText(stmt, ${i + 1}, arguments[${i}]) !== SQLITE_OK) throw new Error(db.errorMessage())`)
       } else if (param === fieldTypes.SQLITE_INTEGER) {
-        source.push(`  if (bindInt(stmt, ${i + 1}, Number(arguments[${i}])) !== SQLITE_OK) throw new Error(error(db))`)
+        source.push(`  if (bindInt(stmt, ${i + 1}, Number(arguments[${i}])) !== SQLITE_OK) throw new Error(db.errorMessage())`)
       } else if (param === fieldTypes.SQLITE_FLOAT) {
-        source.push(`  if (bindDouble(stmt, ${i + 1}, Number(arguments[${i}])) !== SQLITE_OK) throw new Error(error(db))`)
+        source.push(`  if (bindDouble(stmt, ${i + 1}, Number(arguments[${i}])) !== SQLITE_OK) throw new Error(db.errorMessage())`)
       } else if (param === fieldTypes.SQLITE_INT64) {
-        source.push(`  if (bindInt64(stmt, ${i + 1}, BigInt(arguments[${i}])) !== SQLITE_OK) throw new Error(error(db))`)
+        source.push(`  if (bindInt64(stmt, ${i + 1}, BigInt(arguments[${i}])) !== SQLITE_OK) throw new Error(db.errorMessage())`)
       } else if (param === fieldTypes.SQLITE_BLOB) {
-        source.push(`  if (bindBlob(stmt, ${i + 1}, arguments[${i}]) !== SQLITE_OK) throw new Error(error(db))`)
+        source.push(`  if (bindBlob(stmt, ${i + 1}, arguments[${i}]) !== SQLITE_OK) throw new Error(db.errorMessage())`)
       }
       i++
     }
@@ -218,7 +218,7 @@ class Query {
     count++
   }
   if (ok !== SQLITE_OK && ok !== SQLITE_DONE) {
-    throw new Error(error(db))
+    throw new Error(db.errorMessage())
   }
   this.count = count
   reset(stmt)
@@ -247,7 +247,7 @@ return Row
 
   exec (...values) {
     const { params, stmt, types, names, rows, maxRows } = this
-    const { db } = this.db
+    const { db } = this
 
     let i = 0
     // TODO: have a sqlite.binParams, where i can pass in all params as an array and bind them with one c++ call
@@ -255,15 +255,15 @@ return Row
     for (const param of params) {
       const p = param.type ? param.type : param
       if (p === fieldTypes.SQLITE_TEXT) {
-        if (sqlite.bindText(stmt, i + 1, values[i]) !== constants.SQLITE_OK) throw new Error(sqlite.error(db))
+        if (sqlite.bindText(stmt, i + 1, values[i]) !== constants.SQLITE_OK) throw new Error(db.errorCode())
       } else if (p === fieldTypes.SQLITE_INTEGER) {
-        if (sqlite.bindInt(stmt, i + 1, Number(values[i])) !== constants.SQLITE_OK) throw new Error(sqlite.error(db))
+        if (sqlite.bindInt(stmt, i + 1, Number(values[i])) !== constants.SQLITE_OK) throw new Error(db.errorCode())
       } else if (p === fieldTypes.SQLITE_FLOAT) {
-        if (sqlite.bindDouble(stmt, i + 1, Number(values[i])) !== constants.SQLITE_OK) throw new Error(sqlite.error(db))
+        if (sqlite.bindDouble(stmt, i + 1, Number(values[i])) !== constants.SQLITE_OK) throw new Error(db.errorCode())
       } else if (p === fieldTypes.SQLITE_INT64) {
-        if (sqlite.bindInt64(stmt, i + 1, BigInt(values[i])) !== constants.SQLITE_OK) throw new Error(sqlite.error(db))
+        if (sqlite.bindInt64(stmt, i + 1, BigInt(values[i])) !== constants.SQLITE_OK) throw new Error(db.errorCode())
       } else if (p === fieldTypes.SQLITE_BLOB) {
-        if (sqlite.bindBlob(stmt, i + 1, values[i]) !== constants.SQLITE_OK) throw new Error(sqlite.error(db))
+        if (sqlite.bindBlob(stmt, i + 1, values[i]) !== constants.SQLITE_OK) throw new Error(db.errorCode())
       }
       i++
     }
@@ -308,12 +308,8 @@ return Row
       rows.push(row)
       ok = sqlite.step(stmt)
     }
-    if (ok !== constants.SQLITE_DONE) {
-      just.error(`bad query status ${ok}`)
-      //just.error(sqlite.error(db))
-    }
     if (ok !== constants.SQLITE_OK && ok !== constants.SQLITE_DONE) {
-      throw new Error(sqlite.error(db))
+      throw new Error(db.errorCode())
     }
     this.count = count
     sqlite.reset(stmt)
@@ -370,7 +366,8 @@ class Database {
     return sqlite.changes(this.db)
   }
 
-  onWal (callback = () => {}) {
+  onWal (callback) {
+    if (!callback) return sqlite.walHook(this.db) 
     return sqlite.walHook(this.db, callback)
   }
 
