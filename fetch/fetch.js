@@ -435,7 +435,6 @@ async function fetch (url, options) {
         res.bytes += chunks.reduce((size, chunk) => size + chunk.byteLength, 0)
         body = body.concat(chunks)
       }
-      just.print(`bytes ${bytes} total ${res.bytes} chunkSize ${parser.size} consumed ${parser.consumed}`)
       const chunk = body.shift()
       if (chunk) return chunk
       return empty
@@ -453,11 +452,24 @@ async function fetch (url, options) {
         res.bytes += chunks.reduce((size, chunk) => size + chunk.byteLength, 0)
         body = body.concat(chunks)
       }
-      just.print(res.bytes)
       bytes = await sock.pull()
     }
     releaseSocket(sock)
     return body.map(buf => buf.readString(buf.byteLength, 0)).join('')
+  }
+  res.chunkedRaw = async () => {
+    let bytes = await sock.pull()
+    while (bytes) {
+      const chunks = parser.parse(bytes, 0)
+      if (!chunks) break
+      if (chunks.length) {
+        res.bytes += chunks.reduce((size, chunk) => size + chunk.byteLength, 0)
+        body = body.concat(chunks)
+      }
+      bytes = await sock.pull()
+    }
+    releaseSocket(sock)
+    return body
   }
   res.text = async () => {
     if (res.chunked) return res.chunkedText()
@@ -472,6 +484,23 @@ async function fetch (url, options) {
       if (res.contentLength && (res.bytes === res.contentLength)) {
         releaseSocket(sock)
         return body.map(buf => buf.readString(buf.byteLength, 0)).join('')
+      }
+      bytes = await sock.pull()
+    }
+  }
+  res.raw = async () => {
+    if (res.chunked) return res.chunkedRaw()
+    if (res.contentLength && (res.bytes === res.contentLength)) {
+      releaseSocket(sock)
+      return body
+    }
+    let bytes = await sock.pull()
+    while (bytes) {
+      body.push(sock.buffer.slice(0, bytes))
+      res.bytes += bytes
+      if (res.contentLength && (res.bytes === res.contentLength)) {
+        releaseSocket(sock)
+        return body
       }
       bytes = await sock.pull()
     }
@@ -497,7 +526,7 @@ async function fetch (url, options) {
         res.bytes += chunks.reduce((size, chunk) => size + chunk.byteLength, 0)
         body = body.concat(chunks)
       }
-      just.print(`bytes ${remaining} total ${res.bytes} chunkSize ${parser.size} consumed ${parser.consumed}`)
+      //just.print(`bytes ${remaining} total ${res.bytes} chunkSize ${parser.size} consumed ${parser.consumed}`)
     } else {
       body.push(sock.buffer.slice(sock.buffer.offset + bytes - remaining, sock.buffer.offset + bytes))
       res.bytes += remaining
